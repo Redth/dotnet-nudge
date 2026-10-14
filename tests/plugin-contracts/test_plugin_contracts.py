@@ -364,7 +364,8 @@ class LauncherTests(unittest.TestCase):
         )
 
     def test_bash_launcher_preserves_arguments_stdin_stdout_stderr_and_exit_status(self) -> None:
-        engine = self.temp_root / "engine executable with spaces"
+        name = "engine executable with spaces.exe" if os.name == "nt" else "engine executable with spaces"
+        engine = self.temp_root / name
         engine.symlink_to(sys.executable)
         env = self.base_env()
         env["NUDGE_ENGINE_PATH"] = str(engine)
