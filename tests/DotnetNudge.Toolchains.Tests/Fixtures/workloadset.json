@@ -1,0 +1,5 @@
+{
+  "microsoft.net.sdk.android": "35.0.50/9.0.100",
+  "microsoft.net.sdk.ios": "26.2.10191/10.0.100",
+  "microsoft.net.sdk.maui": "10.0.10/10.0.100"
+}
