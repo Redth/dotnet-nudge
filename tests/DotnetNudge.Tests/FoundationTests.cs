@@ -58,6 +58,33 @@ public sealed class FoundationTests
         new(1, WorkspaceDiscovery.Discover(fixture.Root), [finding], [], DateTimeOffset.UtcNow);
 
     [Fact]
+    public void MetadataRevalidationPreservesBodyFetchProvenance()
+    {
+        using var fixture = new Fixture();
+        var clock = new Clock();
+        using var state = fixture.State(clock);
+        state.Cache(ReleaseMetadata.IndexUrl, Index, "etag");
+        var fetched = state.Cached(ReleaseMetadata.IndexUrl)!.Value.Fetched;
+        clock.Now = clock.Now.AddHours(25);
+        state.Cache(ReleaseMetadata.IndexUrl, Index, "etag", revalidated: true);
+        var revalidated = state.Cached(ReleaseMetadata.IndexUrl)!.Value;
+        Assert.Equal(fetched, revalidated.Fetched);
+        Assert.Equal(clock.Now, revalidated.Refreshed);
+    }
+
+    [Fact]
+    public void AdmissionRejectsRelativeHostWorkspaceInsteadOfUsingProcessCwd()
+    {
+        using var fixture = new Fixture();
+        using var state = fixture.State();
+        using var service = new NudgeService(state);
+        Assert.Throws<ArgumentException>(() => state.Register(".", TimeSpan.FromMinutes(1)));
+        Assert.Throws<ArgumentException>(() => service.Status("."));
+        Assert.Throws<ArgumentException>(() => HookAdapter.Handle("copilot", "session-start",
+            """{"cwd":".","session_id":"relative"}""", state));
+    }
+
+    [Fact]
     public void DiscoveryKeepsScopedDeclarationsAndAvoidsGeneratedDirectories()
     {
         using var fixture = new Fixture();
@@ -202,14 +229,18 @@ public sealed class FoundationTests
         Assert.NotEqual(aFinding.SubjectKey, bFinding.SubjectKey);
         Assert.Contains("A/global.json", aFinding.SubjectKey);
         Assert.Contains("B/global.json", bFinding.SubjectKey);
+        state.Register(a, TimeSpan.FromMinutes(15));
+        state.Register(b, TimeSpan.FromMinutes(15));
         state.QueueScan(left.Workspace.WorkspaceId);
         state.QueueScan(right.Workspace.WorkspaceId);
-        state.Save(left);
+        state.FinishScan(state.LeaseScan("scanner-a", left.Workspace.WorkspaceId)!, "scanner-a",
+            left, null, NudgeState.WorkspaceFingerprint(a));
         var pending = state.Status(right.Workspace.RepositoryId, right.Workspace.WorktreeId,
             right.Workspace.WorkspaceId);
         Assert.Null(pending.ScannedAt);
         Assert.Contains(pending.Coverage, c => c.Check == "scan-job");
-        state.Save(right);
+        state.FinishScan(state.LeaseScan("scanner-b", right.Workspace.WorkspaceId)!, "scanner-b",
+            right, null, NudgeState.WorkspaceFingerprint(b));
         Assert.Equal("10.0.101", state.Latest(left.Workspace.WorkspaceId)!.Findings.Single().Current);
         Assert.Equal("10.0.102", state.Latest(right.Workspace.WorkspaceId)!.Findings.Single().Current);
         var aPayload = JsonSerializer.Serialize(new { cwd = a, session_id = "a" });
@@ -217,6 +248,9 @@ public sealed class FoundationTests
         Assert.Contains(aFinding.Id, HookAdapter.Handle("copilot", "session-start", aPayload, state));
         Assert.Equal("{}", HookAdapter.Handle("claude", "session-start", bPayload, state));
         clock.Now = clock.Now.AddDays(8);
+        Assert.Equal("{}", HookAdapter.Handle("claude", "session-start", bPayload, state));
+        state.FinishScan(state.LeaseScan("refresh-b", right.Workspace.WorkspaceId)!, "refresh-b",
+            right with { ScannedAt = clock.Now }, null, NudgeState.WorkspaceFingerprint(b));
         Assert.Contains(bFinding.Id, HookAdapter.Handle("claude", "session-start", bPayload, state));
         state.Decide(left.Workspace.RepositoryId, left.Workspace.WorkspaceId,
             aFinding.Id, aFinding.Revision, DecisionAction.SkipVersion, null);
@@ -233,7 +267,7 @@ public sealed class FoundationTests
         var (findings, coverage) = await SdkServicing.CheckAsync(workspace, new Releases(Index, Channel));
         Assert.Equal("10.0.113", Assert.Single(findings).Candidate);
         Assert.Equal(Assessment.Partial, Assert.Single(findings).Assessment);
-        Assert.Contains(coverage, c => c.Detail.Contains("effective SDK not observed"));
+        Assert.Contains(coverage, c => c.Detail.Contains("probe coverage"));
         fixture.File("global.json", """{"sdk":{"version":"10.0.113","allowPrerelease":true}}""");
         var (previews, _) = await SdkServicing.CheckAsync(
             WorkspaceDiscovery.Discover(fixture.Root), new Releases(Index, Channel));
@@ -384,6 +418,24 @@ public sealed class FoundationTests
     }
 
     [Fact]
+    public void MutedCategoryCanBeListedAndReenabledAfterItsFindingDisappears()
+    {
+        using var fixture = new Fixture();
+        using var state = fixture.State();
+        var report = Report(fixture, Finding());
+        state.Save(report);
+        state.Decide(report.Workspace.RepositoryId, report.Workspace.WorkspaceId,
+            "sdk:root", "r1", DecisionAction.DisableCategory, null);
+        state.Save(report with { Findings = [] });
+        using var service = new NudgeService(state);
+        Assert.Equal("sdk", Assert.Single(service.Preferences(fixture.Root).DisabledCategories).Category);
+        Assert.Empty(service.Preferences(fixture.Root).SuppressedFindings);
+        Assert.Equal("enable-category", service.EnableCategory(fixture.Root, "sdk").Action);
+        Assert.Empty(service.Preferences(fixture.Root).DisabledCategories);
+        Assert.Throws<InvalidOperationException>(() => service.EnableCategory(fixture.Root, "sdk"));
+    }
+
+    [Fact]
     public void DecisionsAreRevisionBoundAcrossWorktreesAndLeasesAreAtomic()
     {
         using var fixture = new Fixture();
@@ -440,7 +492,10 @@ public sealed class FoundationTests
         var clock = new Clock();
         using var state = fixture.State(clock);
         var report = Report(fixture, Finding());
-        state.Save(report);
+        state.Register(fixture.Root, TimeSpan.FromMinutes(15));
+        state.QueueScan(report.Workspace.WorkspaceId);
+        state.FinishScan(state.LeaseScan("scanner")!, "scanner", report, null,
+            NudgeState.WorkspaceFingerprint(fixture.Root));
         var payload = JsonSerializer.Serialize(new { cwd = fixture.Root, session_id = "a" });
         Assert.Equal("{}", HookAdapter.Handle("copilot", "prompt-submit", payload, state));
         var copilot = HookAdapter.Handle("copilot", "session-start", payload, state);

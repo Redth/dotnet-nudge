@@ -136,8 +136,17 @@ class PluginManifestTests(unittest.TestCase):
         )
         self.assertNotIn("hooks", claude)
         self.assertNotIn("mcpServers", claude)
-        self.assertFalse((plugin_dir / "mcp.json").exists())
-        self.assertFalse((plugin_dir / ".mcp.json").exists())
+        portable_mcp = read_json(plugin_dir / "mcp.json")
+        native_mcp = read_json(plugin_dir / ".mcp.json")
+        self.assertEqual(portable_mcp["$schema"], "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json")
+        for config, placeholder in ((portable_mcp, "${PLUGIN_DATA}"),
+                                    (native_mcp, "${CLAUDE_PLUGIN_DATA}")):
+            self.assertEqual(set(config["mcpServers"]), {"dotnet-nudge"})
+            server = config["mcpServers"]["dotnet-nudge"]
+            self.assertEqual(server["type"], "stdio")
+            self.assertEqual(server["command"], "dotnet-nudge")
+            self.assertEqual(server["args"], ["mcp"])
+            self.assertEqual(server["env"], {"NUDGE_PLUGIN_DATA": placeholder})
 
         runtime = read_json(plugin_dir / "runtime-manifest.json")
         self.assertEqual(runtime["status"], "unpublished")
@@ -178,7 +187,10 @@ class PluginManifestTests(unittest.TestCase):
             decision_skill,
         )
         trial_skill = (plugin_dir / "skills/nudge-trial/SKILL.md").read_text(encoding="utf-8")
-        self.assertNotIn("dotnet-nudge trial", trial_skill)
+        self.assertIn("dotnet-nudge trial root --workspace PATH --json", trial_skill)
+        self.assertIn("revision and SHA-256 digest", trial_skill)
+        self.assertIn("MCP `approve` is refused", trial_skill)
+        self.assertIn("not an OS sandbox", trial_skill)
 
     def test_one_hook_configuration_and_exact_host_event_mapping(self) -> None:
         copilot = read_json(PLUGIN / "com.github.copilot/hooks/hooks.json")

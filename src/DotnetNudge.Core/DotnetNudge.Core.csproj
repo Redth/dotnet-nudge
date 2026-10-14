@@ -8,6 +8,12 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.13" />
-    <PackageReference Include="NuGet.Versioning" Version="6.14.0" />
+    <PackageReference Include="NuGet.Versioning" Version="6.14.3" />
+    <ProjectReference Include="../DotnetNudge.Packages/DotnetNudge.Packages.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DotnetNudge.Toolchains\DotnetNudge.Toolchains.csproj" />
+    <ProjectReference Include="..\DotnetNudge.Trials\DotnetNudge.Trials.csproj" />
   </ItemGroup>
 </Project>

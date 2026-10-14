@@ -17,7 +17,8 @@ public enum Priority { Critical, High, Medium, Low }
 public enum DecisionAction { Snooze, SkipVersion, DisableCategory, EnableCategory }
 
 public sealed record Evidence(string Type, string Uri, DateTimeOffset RetrievedAt);
-public sealed record FindingScope(string? Project, string? Framework, string? SdkScope);
+public sealed record FindingScope(string? Project, string? Framework, string? SdkScope,
+    string? RuntimeIdentifier = null, string? Source = null);
 public sealed record Finding(
     int SchemaVersion, string Id, string SubjectKey, string Revision, string Kind,
     Priority Priority, string? Current, string? Candidate, FindingScope Scope,
@@ -41,6 +42,11 @@ public sealed record StatusReport(int SchemaVersion, string RepositoryId, string
     DateTimeOffset? ScannedAt, IReadOnlyList<FindingStatus> Findings, IReadOnlyList<Coverage> Coverage);
 public sealed record DecisionResult(int SchemaVersion, string FindingId, string Revision,
     DecisionAction Action, DateTimeOffset RecordedAt, DateTimeOffset? Until);
+public sealed record CategoryPreference(string Category, DateTimeOffset RecordedAt);
+public sealed record PreferencesReport(int SchemaVersion, string RepositoryId, string WorkspaceId,
+    IReadOnlyList<CategoryPreference> DisabledCategories, IReadOnlyList<FindingStatus> SuppressedFindings);
+public sealed record CategoryPreferenceResult(int SchemaVersion, string Category, string Action,
+    DateTimeOffset RecordedAt);
 public sealed record DoctorReport(int SchemaVersion, string StateDirectory, string? Workspace,
     string? RepositoryId, string? WorktreeId, string? WorkspaceId, string ReleaseMetadataSource,
-    string Note);
+    string Note, IReadOnlyList<Coverage>? Coverage = null);

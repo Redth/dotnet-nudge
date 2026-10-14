@@ -2,9 +2,29 @@
 
 Research date: October 14, 2026.
 
-Status: proposed architecture and implementation sequence, not an implemented plugin.
-At the start of this research, the repository contained a README, license, and
-ignore file.
+Status: the architecture below is the original research and roadmap; a scoped
+prototype is implemented. At the start of this research, the repository
+contained a README, license, and ignore file.
+
+## Current prototype status
+
+Core state/decisions, restored-package graph intelligence and inert guidance,
+offline toolchain analysis, approved isolated trials, cached host hooks, a CLI,
+and a local stdio MCP endpoint are implemented. Linux, macOS, and Windows CI
+build and test the applicable components and self-contained engine; trial
+execution remains unsupported on Windows. Independent macOS headless Copilot
+CLI acceptance with an explicitly installed engine verified MCP connection,
+restored package-guidance bytes, and session-start delivery of a synthetic
+high-priority SDK finding using an explicitly permitted model. That is not
+Claude Code, IDE, or all-platform conversational certification.
+
+Package-source/advisory gaps, absent or stale workload/host/deployment evidence,
+unsupported platform tooling and runtime smoke, and the need for local engine
+installation remain explicit coverage limits. Trial worktrees are not an OS
+sandbox; only trusted build/test code is appropriate without another approved
+isolation boundary. Later roadmap phases and all-platform workload automation
+are not marked complete. See [development](development.md) for commands and
+[integration](integration.md) for public contracts, evidence, and host limits.
 
 ## 1. Recommendation
 

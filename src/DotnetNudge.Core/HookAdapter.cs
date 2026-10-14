@@ -22,14 +22,18 @@ public static class HookAdapter
             property.ValueKind == JsonValueKind.String ? property.GetString() : null;
         var path = String("cwd") ?? String("workspace") ?? String("workspaceRoot");
         if (path is null || !Directory.Exists(path)) return "{}";
+        if (!Path.IsPathFullyQualified(path))
+            throw new ArgumentException("Hook workspace path must be absolute.");
         var (repository, worktree) = WorkspaceDiscovery.Identities(path);
         var workspace = WorkspaceDiscovery.ScopeId(path);
         var owner = host + ":" + (String("session_id") ?? String("sessionId") ?? workspace);
         if (eventName == "session-end")
         {
             state.Release(owner);
+            state.Close(path, owner);
             return "{}";
         }
+        state.Register(path, TimeSpan.FromMinutes(15), owner);
         if (eventName == "session-start" || eventName == "prompt-submit")
             state.QueueScan(workspace);
         if (host == "copilot" && eventName == "prompt-submit") return "{}";

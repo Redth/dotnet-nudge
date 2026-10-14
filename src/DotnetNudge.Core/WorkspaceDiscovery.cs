@@ -25,10 +25,18 @@ public static class WorkspaceDiscovery
     public static string Canonical(string path)
     {
         var full = Path.GetFullPath(path);
-        var resolved = Directory.Exists(full)
-            ? new DirectoryInfo(full).ResolveLinkTarget(true)?.FullName
-            : File.Exists(full) ? new FileInfo(full).ResolveLinkTarget(true)?.FullName : null;
-        return Path.TrimEndingDirectorySeparator(resolved ?? full);
+        var root = Path.GetPathRoot(full)!;
+        var current = root;
+        foreach (var segment in full[root.Length..].Split(Path.DirectorySeparatorChar,
+            StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, segment);
+            var target = Directory.Exists(current)
+                ? new DirectoryInfo(current).ResolveLinkTarget(true)
+                : File.Exists(current) ? new FileInfo(current).ResolveLinkTarget(true) : null;
+            if (target is not null) current = target.FullName;
+        }
+        return Path.TrimEndingDirectorySeparator(current);
     }
 
     static string Id(string path) =>
@@ -97,20 +105,29 @@ public static class WorkspaceDiscovery
         var configurations = new List<string>();
         var declarations = new List<SdkDeclaration>();
         var coverage = new List<Coverage>();
-        void Walk(string directory)
+        var visited = 0;
+        void Walk(string directory, int depth)
         {
+            if (depth > 32) throw new InvalidDataException("Workspace directory depth exceeds 32.");
             foreach (var file in Directory.EnumerateFiles(directory))
             {
+                if (++visited > 50000)
+                    throw new InvalidDataException("Workspace scan exceeds 50,000 files.");
+                if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
+                    continue;
                 var name = Path.GetFileName(file);
                 var relative = Path.GetRelativePath(root, file).Replace('\\', '/');
                 if (ProjectExtensions.Contains(Path.GetExtension(file)))
                 {
                     try
                     {
+                        if (new FileInfo(file).Length > 2 * 1024 * 1024)
+                            throw new InvalidDataException("Project declaration exceeds 2 MiB.");
                         using var reader = XmlReader.Create(file, new XmlReaderSettings
                         {
                             DtdProcessing = DtdProcessing.Prohibit,
-                            XmlResolver = null
+                            XmlResolver = null,
+                            MaxCharactersInDocument = 2 * 1024 * 1024
                         });
                         var xml = XDocument.Load(reader);
                         var sdk = xml.Root?.Attribute("Sdk")?.Value;
@@ -126,7 +143,7 @@ public static class WorkspaceDiscovery
                         else coverage.Add(new("project:" + relative, Assessment.Partial,
                             "Non-SDK project: inventory-only; MSBuild evaluation not performed."));
                     }
-                    catch (Exception ex) when (ex is System.Xml.XmlException or IOException)
+                    catch (Exception ex) when (ex is System.Xml.XmlException or IOException or InvalidDataException)
                     {
                         coverage.Add(new("project:" + relative, Assessment.Blocked, ex.Message));
                     }
@@ -144,16 +161,16 @@ public static class WorkspaceDiscovery
                 {
                     configurations.Add(relative);
                     try { declarations.Add(ReadSdk(file, relative)); }
-                    catch (Exception ex) when (ex is JsonException or IOException)
+                    catch (Exception ex) when (ex is JsonException or IOException or InvalidDataException)
                     { coverage.Add(new("sdk:" + relative, Assessment.Blocked, ex.Message)); }
                 }
             }
             foreach (var child in Directory.EnumerateDirectories(directory))
                 if (!Excluded.Contains(Path.GetFileName(child)) &&
                     (File.GetAttributes(child) & FileAttributes.ReparsePoint) == 0)
-                    Walk(child);
+                    Walk(child, depth + 1);
         }
-        Walk(root);
+        Walk(root, 0);
         // Ancestor scopes can affect SDK selection but cannot be inferred from a nested declaration.
         var ancestor = Directory.GetParent(root);
         while (ancestor is not null)
@@ -162,7 +179,7 @@ public static class WorkspaceDiscovery
             if (File.Exists(global))
             {
                 try { declarations.Add(ReadSdk(global, Canonical(global))); }
-                catch (Exception ex) when (ex is JsonException or IOException)
+                catch (Exception ex) when (ex is JsonException or IOException or InvalidDataException)
                 { coverage.Add(new("sdk:" + global, Assessment.Blocked, ex.Message)); }
                 break;
             }

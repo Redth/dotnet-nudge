@@ -28,8 +28,9 @@ description: Capture explicit dotnet-nudge reminder choices without claiming uns
   ```
 
 - The foundation supports the structured command `dotnet-nudge decision --workspace PATH --finding ID --revision REV --action snooze|skip-version|disable-category|enable-category [--until RFC3339] [--state-dir PATH] --json`. Run it only after approval of that exact record, using its current finding ID and revision. If the command is unavailable or fails, keep the summary in the conversation and report that it was not persisted.
+- `dotnet-nudge preferences --workspace PATH [--state-dir PATH] --json` lists durable category mutes even when the original finding has disappeared. With explicit approval, `--enable-category NAME` reverses an existing mute without inventing a current finding revision. MCP `nudge_preferences` supports the same `action: enable-category` plus exact `category` field.
 
 ## Supported and not yet implemented
 
-- Decision persistence is available through the foundation CLI, not an MCP endpoint. `enable-category` reverses a category disable when supported by current engine help.
+- Decision persistence is available through CLI `decision` or MCP `nudge_decide`/`nudge_preferences` when connected. `enable-category` reverses a category disable when supported by current engine help.
 - Do not claim that a snooze, skip, category setting, or cross-session preference was saved unless the decision command confirms success.

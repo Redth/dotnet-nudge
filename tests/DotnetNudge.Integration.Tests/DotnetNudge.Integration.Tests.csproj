@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <ProjectReference Include="../../src/DotnetNudge/DotnetNudge.csproj" />
+  </ItemGroup>
+  <ItemGroup><Using Include="Xunit" /></ItemGroup>
+  <ItemGroup>
+    <Content Include="../DotnetNudge.Packages.Tests/Fixtures/graph.json"
+             Link="Fixtures/graph.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../DotnetNudge.Toolchains.Tests/Fixtures/workloadset.json"
+             Link="Fixtures/workloadset.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../DotnetNudge.Toolchains.Tests/Fixtures/android-dependencies.json"
+             Link="Fixtures/android-dependencies.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../DotnetNudge.Toolchains.Tests/Fixtures/installed-workloads.json"
+             Link="Fixtures/installed-workloads.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../DotnetNudge.Toolchains.Tests/Fixtures/releases.json"
+             Link="Fixtures/releases.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

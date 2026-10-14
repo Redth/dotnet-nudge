@@ -17,11 +17,17 @@ dependencies, under writable user data.
 `runtime-manifest.json` intentionally has no release artifacts until a real
 release is published.
 
-The separate engine foundation exposes `version`, read-only `scan`/`status`,
-`doctor`, and structured `decision` CLI commands. This plugin package does not
-provide a trial runner or MCP server; it deliberately enables no MCP server.
-There is no published engine release yet, and hook/manifest schema validation
-does not prove end-to-end chat or model delivery.
+The engine exposes `version`, read-only `scan`/`status`/`package-context`/
+`toolchains`, `doctor`, structured `decision`, approved isolated `trial`
+operations, and a local stdio `mcp` command. The plugin declares that server
+in portable `mcp.json` for Copilot CLI and native `.mcp.json` for Claude Code.
+It starts only after the self-contained engine is installed and its directory
+is on the host's `PATH`; plugin installation alone still cannot start the
+engine. No release is published yet. Restored package graph changes, bounded
+mapped-source metadata, offline toolchain analysis, inert package guidance
+and exact-approved worktree trials are integrated. Trials run trusted build
+code without an OS sandbox; hook/schema validation does not prove
+end-to-end model delivery.
 
 For local source development, once the foundation source is present:
 
@@ -48,7 +54,14 @@ dotnet run --project src/DotnetNudge/DotnetNudge.csproj -- status --workspace "$
 
 See [plugin development](docs/plugin-development.md) for isolated validation,
 hook details, setup constraints, and compatibility limitations, and the
+[integration contract](docs/integration.md) for MCP and worker behavior, and the
 [implementation plan](docs/implementation-plan.md) for the broader roadmap.
+
+Independent macOS headless Copilot CLI acceptance confirmed MCP connection,
+package-guidance reading, and cached session-start hook context with a
+synthetic SDK finding using an explicitly installed local engine. It does not
+certify Claude Code, IDE hosts, other operating systems' conversations, or
+execution of suggested changes; see the [qualified evidence](docs/integration.md).
 
 ## Installation
 

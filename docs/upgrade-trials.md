@@ -14,10 +14,18 @@ neither publishes nor adopts a result.
 var store = new TrialStore(approvedAbsoluteTrialRoot);
 var runner = new TrialRunner(store);
 runner.Propose(plan);
-runner.Approve(plan.Id, plan.Revision); // only after an explicit decision
+runner.Approve(plan.Id, plan.Revision, TrialRunner.Digest(plan)); // only after a trusted human decision
 var result = await runner.ExecuteAsync(plan.Id, plan.Revision, cancellationToken);
 var report = runner.Report(plan.Id);
 ```
+
+The CLI/MCP integration does not treat a tool call as a human decision:
+`nudge_trial` refuses `approve`. The human reviews the complete persisted
+plan, workspace, revision and digest in a local interactive
+`dotnet-nudge trial approve` terminal and types the exact confirmation;
+redirected/noninteractive CLI invocations cannot approve. The runner checks
+the expected persisted plan digest while holding its approval lease. Library
+callers remain responsible for their own equivalent trusted approval boundary.
 
 `TrialPlan` pins the repository's committed `HEAD` SHA, approved project scopes,
 exact SDK versions and RID, SDK-only versus explicit package edits, and a

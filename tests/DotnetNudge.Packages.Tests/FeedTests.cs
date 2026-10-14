@@ -108,6 +108,40 @@ public sealed class FeedTests
     }
 
     [Fact]
+    public async Task AuditOnlyCoversTransitiveAndBeyondCandidateWindowWithoutVersionQueries()
+    {
+        using var feed = new LocalFeed
+        {
+            BaseAdvisories = """
+                {"acme.child":[{"url":"https://example.invalid/child","severity":2,"versions":"[1.0.0,1.3.0)"}],
+                 "acme.fifth":[{"url":"https://example.invalid/fifth","severity":3,"versions":"[1.0.0,1.3.0)"}]}
+                """,
+            UpdateAdvisories = "{}"
+        };
+        var root = CreateMappedConfig(feed, "Acme.*");
+        try
+        {
+            var nodes = new[] { "Acme.First", "Acme.Second", "Acme.Third", "Acme.Fourth",
+                "Acme.Fifth", "Acme.Child" }.Select((id, index) =>
+                new PackageNode("Fixture", "net8.0", null, id, NuGetVersion.Parse("1.2.0"),
+                    index != 5, null, null, null, [])).ToArray();
+            var graph = new PackageGraph("fixture", "hash", nodes, EvidenceStatus.Complete, null);
+            var intelligence = new PackageIntelligence(new PackageSourcePolicy(root));
+            var fifth = await intelligence.AuditOnlyAsync(nodes[4], graph);
+            var transitive = await intelligence.AuditOnlyAsync(nodes[5], graph);
+            Assert.Equal(EvidenceStatus.Complete, fifth.Status);
+            Assert.Equal(EvidenceStatus.Complete, transitive.Status);
+            Assert.Contains(fifth.Advisories, a => a.Url.EndsWith("/fifth", StringComparison.Ordinal));
+            Assert.Contains(transitive.Advisories, a => a.Url.EndsWith("/child", StringComparison.Ordinal));
+            Assert.Null(fifth.MinimalKnownFix);
+            Assert.Empty(fifth.Candidates);
+            Assert.DoesNotContain(feed.Requests, path => path.StartsWith("/registration/", StringComparison.Ordinal));
+            Assert.Single(feed.Requests, path => path == "/vulnerability-index.json");
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
     public async Task Mapped_private_ID_only_reaches_private_feed_and_refresh_replaces_partitions()
     {
         using var privateFeed = new LocalFeed();
