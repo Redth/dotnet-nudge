@@ -1,6 +1,6 @@
 ---
 name: nudge-trial
-description: Review exact-approved .NET upgrade trials and their evidence and isolation limits.
+description: Plan and explain .NET update checks in separate checkouts.
 ---
 
 # Nudge trial
@@ -10,6 +10,7 @@ description: Review exact-approved .NET upgrade trials and their evidence and is
 - Prefer connected MCP tools. If CLI commands below need a fallback, use `node "<plugin-root>/scripts/run.cjs"` in place of `dotnet-nudge`; derive the plugin root from this installed skill's path, not a guessed engine location. Automatic verified engine setup does not authorize a trial or SDK/workload installation.
 - Establish the requested project, candidate change, and evidence with `dotnet-nudge scan --workspace PATH [--state-dir PATH] --json` or `status --workspace PATH [--state-dir PATH] --json` when the installed foundation engine lists those commands in `--help`.
 - Identify missing SDKs, workloads, platform tools, and build evidence as unknown or blocked; do not install or select them.
+- Use plain language such as "Try it in a separate checkout" and explain what would run and what would stay unchanged. Keep internal IDs, revision tokens, assessment labels, raw JSON and ISO timestamps out of normal replies and choices. Do not hide the fact that a separate checkout is not a security sandbox.
 
 ## User approval
 
@@ -19,7 +20,7 @@ description: Review exact-approved .NET upgrade trials and their evidence and is
 
 ## Structured decisions
 
-- If the user defers or approves a future trial, summarize `finding_id`, `scope`, `decision`, `candidate`, and `approved_execution_boundary` in the conversation.
+- If the user defers or asks to try an update, explain the next step in plain language. "Help me update" or "Try it in a separate checkout" requests a plan, not execution approval. Keep finding IDs and revision tokens in tool arguments, not a structured record in the conversation; the human terminal approval must still display its required exact plan/digest.
 - Persist or execute a decision only through an installed, explicitly advertised engine capability after the user approves that specific operation.
 
 ## Supported and not yet implemented

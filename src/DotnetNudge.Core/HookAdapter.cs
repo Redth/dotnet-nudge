@@ -44,16 +44,21 @@ public static class HookAdapter
             .FirstOrDefault(f => state.TryLease(repository, f, owner, TimeSpan.FromMinutes(2)));
         if (finding is null) return "{}";
         var questionTool = host == "copilot" ? "ask_user" : "AskUserQuestion";
-        var context = $"dotnet-nudge: {finding.Kind} finding {finding.Id} (revision {finding.Revision}) " +
-            $"has a candidate {finding.Candidate}. Assessment: {finding.Assessment}. " +
+        var context = $"dotnet-nudge internal context (not user-facing text): {finding.Kind}; " +
+            $"finding ID {finding.Id}; revision {finding.Revision}; current {finding.Current}; " +
+            $"candidate {finding.Candidate}; assessment {finding.Assessment}. " +
             "Read current evidence with `nudge_context` or `dotnet-nudge status --workspace PATH --json`. " +
             "Follow the nudge-maintain skill's interactive-question guidance. " +
             "For this newly hook-delivered finding, delivered-recently is a delivery cooldown, not a " +
             "user answer; offer it once if the current ID and revision still match. " +
             $"When offering this finding, call the host's native `{questionTool}` tool with one " +
             "single-select question and 2-4 concrete choices, including Not now; do not print a choice menu in chat. " +
-            "Review is read-only, not approval for changes or a trial. Obtain explicit approval for exact " +
-            "reminder decisions before recording them. If the question tool is unavailable or the session " +
+            "Use short, friendly, plain-language questions and choices such as What's new?, Help me update, " +
+            "Remind me next week and Not now, as appropriate. Keep finding IDs, revision tokens, assessment " +
+            "labels and ISO timestamps out of user-facing text. Details are read-only; Help me update requests " +
+            "a plan, not approval to change files, install tools or run a trial. Explain the actual changes " +
+            "and ask before executing them. Obtain explicit approval for exact reminder decisions in plain " +
+            "language before recording them. If the question tool is unavailable or the session " +
             "is noninteractive, report the finding without assuming an answer or recording a decision.";
         if (Encoding.UTF8.GetByteCount(context) > ContextLimitBytes)
             throw new InvalidDataException("Hook context exceeds 4 KiB.");

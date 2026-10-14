@@ -106,7 +106,7 @@ class PluginManifestTests(unittest.TestCase):
             {
                 "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
                 "name": "dotnet-nudge",
-                "version": "0.2.1",
+                "version": "0.2.2",
                 "description": "A .NET maintenance plugin with shared skills and host-specific hooks; engine actions remain explicit.",
                 "author": {"name": "Redth"},
                 "repository": "https://github.com/Redth/dotnet-nudge",
@@ -222,6 +222,10 @@ class PluginManifestTests(unittest.TestCase):
                 self.assertIn("`ask_user` (Copilot)", content)
                 self.assertIn("not a choice menu in chat", content)
                 self.assertIn("noninteractive, report only; never infer consent", content)
+                for internal_detail in (
+                    "internal IDs", "revision tokens", "assessment labels", "raw JSON", "ISO timestamps"
+                ):
+                    self.assertIn(internal_detail, content)
 
         guidance = reference.read_text(encoding="utf-8")
         examples = [
@@ -244,14 +248,31 @@ class PluginManifestTests(unittest.TestCase):
             [option["label"] for option in question["options"]], copilot["choices"]
         )
         self.assertIn("Not now", copilot["choices"])
+        self.assertEqual(
+            copilot["choices"],
+            ["What's new?", "Help me update", "Remind me next week", "Not now"],
+        )
+        self.assertIn("I noticed there's an update to the .NET SDK", copilot["question"])
+        self.assertIn("Would you like to hear what's new or get help updating?", copilot["question"])
         self.assertNotIn("Other", copilot["choices"])
         for option in question["options"]:
             self.assertEqual(set(option), {"label", "description"})
             self.assertTrue(option["description"])
+        visible_copy = json.dumps(examples).lower()
+        for internal_detail in (
+            "review evidence", "finding", "revision", "assessment", "coverage",
+            "scope", "record", "rfc3339", "snooze", "skip-version", "expiry", "<id>",
+        ):
+            self.assertNotIn(internal_detail, visible_copy)
         for boundary in (
             "Offer only when a concrete candidate exists",
             "Cancellation, dismissal and no answer also grant no consent",
             "verify the ID and revision still match",
+            "Keep an internal binding between the question and its exact finding ID",
+            '"Help me update" requests the next step',
+            "changing a project's SDK selection is not the same as installing an SDK",
+            "Never hide a preview",
+            "Do not\ninvent release-note details, features or compatibility claims",
             "the hook already recorded\ncontext delivery",
             "Offer that exact hook finding once",
             "`scan-pending`, `snoozed`, `version-skipped` and `category-disabled` still block",
@@ -260,6 +281,10 @@ class PluginManifestTests(unittest.TestCase):
             "Hooks deliver context, not a verified question presentation or user answer",
         ):
             self.assertIn(boundary, guidance)
+        self.assertNotIn("show the exact finding ID", guidance)
+        self.assertNotIn("```yaml", (PLUGIN / "skills/nudge-preferences/SKILL.md").read_text(
+            encoding="utf-8"
+        ))
 
     def test_one_hook_configuration_and_exact_host_event_mapping(self) -> None:
         copilot = read_json(PLUGIN / "com.github.copilot/hooks/hooks.json")

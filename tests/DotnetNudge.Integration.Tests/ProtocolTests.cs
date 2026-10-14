@@ -110,7 +110,7 @@ public sealed class ProtocolTests
             Assert.Contains(tools, t => t.Name == "nudge_toolchains");
             Assert.Contains(tools, t => t.Name == "nudge_preferences");
             Assert.Contains(tools, t => t.Name == "nudge_package_assess");
-            foreach (var name in new[] { "nudge_status", "nudge_scan", "nudge_context",
+            foreach (var name in new[] { "nudge_status", "nudge_scan", "nudge_context", "nudge_package_context",
                 "nudge_package_assess", "nudge_toolchains", "nudge_decide", "nudge_preferences",
                 "nudge_trial", "nudge_register" })
             {
@@ -119,10 +119,16 @@ public sealed class ProtocolTests
                 Assert.Contains("ask_user (Copilot)", description);
                 Assert.Contains("single-select", description);
                 Assert.Contains("Not now, not a choice menu in chat", description);
-                Assert.Contains("Review is not approval for changes or trials", description);
+                Assert.Contains("short, friendly, plain-language questions and choices", description);
+                Assert.Contains("What's new?, Help me update and Remind me next week", description);
+                Assert.Contains("Keep finding IDs, revision tokens, assessment labels and ISO timestamps out of user-facing text", description);
+                Assert.Contains("Help me update requests a plan, not approval for changes or trials", description);
+                Assert.Contains("Explain the actual changes and ask before executing them", description);
                 Assert.Contains("noninteractive, report only; never assume consent", description);
             }
             Assert.Contains("explicit approval", Assert.Single(tools,
+                t => t.Name == "nudge_decide").Description!);
+            Assert.Contains("in tool arguments, not the question", Assert.Single(tools,
                 t => t.Name == "nudge_decide").Description!);
             Assert.Contains("a human must confirm the persisted plan in an interactive CLI",
                 Assert.Single(tools, t => t.Name == "nudge_trial").Description!);

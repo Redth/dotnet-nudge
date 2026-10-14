@@ -47,7 +47,11 @@ public sealed class NudgeTools(McpStateDirectory location)
     const string QuestionGuidance = " When offering maintenance choices, follow nudge-maintain's " +
         "interactive-question guidance and call the host's native AskUserQuestion (Claude Code) or " +
         "ask_user (Copilot) tool with one single-select question and 2-4 concrete choices including " +
-        "Not now, not a choice menu in chat. Review is not approval for changes or trials. If the tool " +
+        "Not now, not a choice menu in chat. Use short, friendly, plain-language questions and choices " +
+        "such as What's new?, Help me update and Remind me next week, as appropriate. Keep finding IDs, " +
+        "revision tokens, assessment labels and ISO timestamps out of user-facing text. Details are " +
+        "read-only; Help me update requests a plan, not approval for changes or trials. Explain the " +
+        "actual changes and ask before executing them. If the tool " +
         "is unavailable or the session is noninteractive, report only; never assume consent.";
 
     async Task<string> WithServiceAsync(Func<NudgeService, Task<string>> operation)
@@ -113,7 +117,7 @@ public sealed class NudgeTools(McpStateDirectory location)
         });
     }
 
-    [McpServerTool(Name = "nudge_package_context"), Description("List inert guidance handles from exact restored packages, or read one matching handle and its references.")]
+    [McpServerTool(Name = "nudge_package_context"), Description("List inert guidance handles from exact restored packages, or read one matching handle and its references." + QuestionGuidance)]
     public async Task<string> PackageContext(McpServer server, string workspace,
         string? handle = null, CancellationToken cancellationToken = default)
     {
@@ -147,7 +151,7 @@ public sealed class NudgeTools(McpStateDirectory location)
             JsonSerializer.Serialize(await service.ToolchainsAsync(root, cancellationToken), Contract.Json));
     }
 
-    [McpServerTool(Name = "nudge_decide"), Description("Record a versioned snooze, skip or category preference only after the user's explicit approval of the exact finding ID, revision, action and any expiry." + QuestionGuidance)]
+    [McpServerTool(Name = "nudge_decide"), Description("Record a versioned snooze, skip or category preference only after the user's explicit approval of the reminder action, affected update/category and duration in plain language. Keep the exact finding ID, revision and expiry in tool arguments, not the question." + QuestionGuidance)]
     public async Task<string> Decide(McpServer server, string workspace, string findingId,
         string revision, string action, string? until = null, CancellationToken cancellationToken = default)
     {

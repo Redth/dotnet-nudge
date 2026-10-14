@@ -824,14 +824,21 @@ guidance can be immediate because it is directly relevant to the current work.
 
 Example question intents:
 
-> A direct dependency has a known advisory, with a candidate patch fix. Review
-> the proposed change now, or snooze this advisory?
+> There's a security warning for a package this project uses. Want to see what
+> it means or look at options for updating?
 
-> The package upgrade completed. Its version-matched guidance describes a
-> migration step and an optional feature. Review the migration guidance?
+> The package you updated has notes about a change you may need to make.
+> Would you like me to walk you through it?
 
-> A new release candidate is available. Try a tooling-only build in an isolated
-> worktree, leaving the main workspace unchanged?
+> There's a newer .NET preview available. Want to know what's new or look at
+> trying it in a separate checkout?
+
+Use short, everyday choices such as "What's new?", "Help me update", "Remind me
+next week" and "Not now". Keep finding IDs, revision tokens, status labels,
+raw decision records and ISO timestamps behind the scenes. Retain important
+uncertainty and exact action boundaries without turning the question into a
+diagnostic report. An update choice leads to an explanation of what would
+change and approval of that specific action, not an unspecified install.
 
 Use the host's native question tool: Copilot `ask_user` or Claude Code
 `AskUserQuestion`, not a text menu in chat. Hooks, MCP descriptions and shared
@@ -839,7 +846,7 @@ skills direct the host agent to ask one single-select question with 2-4 choices,
 including a no-change option. The [interactive-question contract](../plugins/dotnet-nudge/skills/nudge-maintain/references/interactive-questions.md)
 defines supported choices, exact decision scopes and report-only behavior when
 the tool is unavailable. Downloads, build execution, and a TFM migration require
-their own explicit scope; "review" is not consent to execute, and a question
+their own explicit scope; asking for information is not consent to execute, and a question
 answer does not replace interactive CLI trial approval.
 
 ### Durable state

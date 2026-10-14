@@ -537,6 +537,7 @@ public sealed class FoundationTests
         var container = host == "copilot" ? output.RootElement :
             output.RootElement.GetProperty("hookSpecificOutput");
         var context = container.GetProperty("additionalContext").GetString()!;
+        Assert.Contains("internal context (not user-facing text)", context);
         Assert.Contains($"`{questionTool}`", context);
         Assert.DoesNotContain(host == "copilot" ? "AskUserQuestion" : "ask_user", context);
         Assert.Contains("nudge-maintain", context);
@@ -545,7 +546,13 @@ public sealed class FoundationTests
         Assert.Contains("single-select", context);
         Assert.Contains("2-4 concrete choices, including Not now", context);
         Assert.Contains("do not print a choice menu in chat", context);
-        Assert.Contains("Review is read-only, not approval", context);
+        Assert.Contains("short, friendly, plain-language questions and choices", context);
+        Assert.Contains("What's new?, Help me update", context);
+        Assert.Contains("Remind me next week and Not now", context);
+        Assert.Contains("Keep finding IDs, revision tokens, assessment labels and ISO timestamps out of user-facing text", context);
+        Assert.Contains("Details are read-only", context);
+        Assert.Contains("Help me update requests a plan, not approval", context);
+        Assert.Contains("Explain the actual changes and ask before executing them", context);
         Assert.Contains("explicit approval for exact reminder decisions", context);
         Assert.Contains("noninteractive", context);
         Assert.Contains("without assuming an answer or recording a decision", context);

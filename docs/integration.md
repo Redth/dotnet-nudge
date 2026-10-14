@@ -162,9 +162,21 @@ including the host-specific argument shapes and action/approval boundaries.
 The host agent should read current evidence, briefly explain one finding and
 call its actual tool with one single-select question and 2-4 concrete choices
 including `Not now`. A chat menu or JSON printed in a reply is not a picker.
-Review is read-only; snooze/skip/category mutations require explicit approval
-of their exact scope and a current revision. No answer, dismissal, cancellation
-or `Not now` records a durable decision. Trial approval still requires the
+The copy is conversational: "I noticed there's an update to the .NET SDK.
+Would you like to hear what's new or get help updating?" Choices such as
+`What's new?`, `Help me update`, `Remind me next week` and `Not now` name useful
+next steps without diagnostic jargon. Keep internal IDs, revision tokens,
+assessment labels, raw JSON and ISO timestamps in tool data, not in normal
+explanations, questions, option descriptions or confirmations. Important
+uncertainty remains explicit in everyday language, and previews remain labeled
+as previews.
+
+`What's new?` is read-only. `Help me update` leads to a supported plan and
+approval of its actual changes, not immediate editing or installation.
+Snooze/skip/category mutations require the user's explicit reminder choice,
+bound internally to its exact update/category, revision and any expiry.
+No answer, dismissal, cancellation or `Not now` records a durable decision.
+Trial approval still requires the
 human's persisted-plan revision/digest confirmation in the interactive CLI.
 
 This is host-agent guidance, not a new hook output schema or server-side MCP
