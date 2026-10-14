@@ -7,7 +7,7 @@ description: Explain the proposed isolated .NET upgrade-trial boundary without c
 
 ## Read-only assessment
 
-- Establish the requested project, candidate change, and evidence using only read-only commands explicitly supported by the installed engine or tools the user named.
+- Establish the requested project, candidate change, and evidence with `dotnet-nudge scan --workspace PATH [--state-dir PATH] --json` or `status --workspace PATH [--state-dir PATH] --json` when the installed foundation engine lists those commands in `--help`.
 - Identify missing SDKs, workloads, platform tools, and build evidence as unknown or blocked; do not install or select them.
 
 ## User approval
@@ -22,5 +22,5 @@ description: Explain the proposed isolated .NET upgrade-trial boundary without c
 
 ## Supported and not yet implemented
 
-- The trial lifecycle and a working trial/MCP endpoint are not provided by this plugin packaging phase.
+- The foundation CLI currently provides `version`, read-only `scan`/`status`, `doctor`, and structured `decision`; the trial lifecycle and an MCP endpoint are not implemented.
 - Do not invoke a guessed `trial` command, simulate trial completion, or claim that schema validation proves isolated execution works.

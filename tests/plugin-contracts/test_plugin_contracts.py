@@ -153,6 +153,23 @@ class PluginManifestTests(unittest.TestCase):
             ):
                 self.assertIn(heading, content)
 
+        status_skill = (plugin_dir / "skills/nudge-status/SKILL.md").read_text(encoding="utf-8")
+        for command in (
+            "dotnet-nudge version",
+            "dotnet-nudge doctor [--workspace PATH] [--state-dir PATH] --json",
+            "dotnet-nudge scan --workspace PATH [--state-dir PATH] --json",
+            "dotnet-nudge status --workspace PATH [--state-dir PATH] --json",
+        ):
+            self.assertIn(command, status_skill)
+
+        decision_skill = (plugin_dir / "skills/nudge-preferences/SKILL.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "snooze|skip-version|disable-category|enable-category",
+            decision_skill,
+        )
+        trial_skill = (plugin_dir / "skills/nudge-trial/SKILL.md").read_text(encoding="utf-8")
+        self.assertNotIn("dotnet-nudge trial", trial_skill)
+
     def test_one_hook_configuration_and_exact_host_event_mapping(self) -> None:
         copilot = read_json(PLUGIN / "com.github.copilot/hooks/hooks.json")
         self.assertEqual(copilot["version"], 1)

@@ -8,20 +8,22 @@ description: Check dotnet-nudge availability and report only verified .NET maint
 ## Read-only assessment
 
 - First distinguish plugin availability from engine availability. If the hook reports that setup is required, say that no runtime assessment was performed.
-- Use a read-only engine command only if the installed `dotnet-nudge --help` explicitly lists it. Do not guess a `status`, `scan`, or MCP command.
+- The foundation CLI contract provides `dotnet-nudge version`, `dotnet-nudge doctor [--workspace PATH] [--state-dir PATH] --json`, and read-only `dotnet-nudge scan --workspace PATH [--state-dir PATH] --json` / `dotnet-nudge status --workspace PATH [--state-dir PATH] --json`. Use only commands listed by the installed executable's `--help`.
+- Quote workspace and state paths, especially when they contain spaces. Do not use a guessed or unverified engine path.
 - Report the scope, evidence source, and any unavailable checks. Do not run restore, build, tests, package downloads, or SDK/workload installation as part of status.
 
 ## User approval
 
 - Assessment is not approval to change project files, install tooling, fetch candidate packages, or start a trial.
 - Before any supported mutating operation, state the exact target, files/tools affected, and execution scope, then obtain the user's approval.
+- Do not use a scan result as the revision token for a decision unless the current result includes that exact finding ID and revision.
 
 ## Structured decisions
 
-- Record a decision in the conversation only after the user chooses it. Include the finding ID (if provided), scope, chosen action, exact target version, and any snooze/expiry.
-- Do not claim that a decision was persisted unless an installed engine command explicitly supports that operation and confirms success.
+- After approval, the supported structured-decision command is `dotnet-nudge decision --workspace PATH --finding ID --revision REV --action snooze|skip-version|disable-category|enable-category [--until RFC3339] [--state-dir PATH] --json`. Use the exact finding ID and revision from current evidence; add `--until` only for an approved snooze.
+- Report the JSON result and do not claim that a decision was persisted if the command fails or its result is inconclusive.
 
 ## Supported and not yet implemented
 
-- This package currently supports shared guidance, host-specific hook launchers, and explicit local runtime setup.
-- A hook schema or a setup diagnostic is not evidence that a scan ran. No MCP endpoint or general status/scan command is promised by this package phase.
+- The engine foundation supports `version`, read-only `scan`/`status`, `doctor`, and structured `decision` CLI commands. This plugin package supplies no MCP endpoint.
+- A hook schema or setup diagnostic is not evidence that a scan ran. No MCP or trial command is implemented.

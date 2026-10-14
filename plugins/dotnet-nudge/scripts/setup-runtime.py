@@ -27,7 +27,7 @@ SUPPORTED_RIDS = {
     "win-x64",
     "win-arm64",
 }
-MAX_EXECUTABLE_BYTES = 1024 * 1024 * 1024
+MAX_FILE_BYTES = 1024 * 1024 * 1024
 MAX_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$")
 RID_PATTERN = re.compile(r"^[a-z0-9]+-[a-z0-9]+$")
@@ -98,7 +98,7 @@ def check_contained_path(root: Path, path: Path) -> None:
 
 
 def copy_limited(source: BinaryIO, destination: Path, size: int, mode: int) -> None:
-    if size <= 0 or size > MAX_EXECUTABLE_BYTES:
+    if size <= 0 or size > MAX_FILE_BYTES:
         raise SetupError("Archive file has an invalid or excessive size.")
     remaining = size
     with destination.open("xb") as output:

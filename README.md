@@ -17,10 +17,19 @@ dependencies, under writable user data.
 `runtime-manifest.json` intentionally has no release artifacts until a real
 release is published.
 
-The shared skills provide bounded guidance, not an MCP server. This phase does
-not provide a working scan/status API, preference persistence, or trial runner.
-The plugin deliberately enables no MCP server. Hook/manifest schema validation
+The separate engine foundation exposes `version`, read-only `scan`/`status`,
+`doctor`, and structured `decision` CLI commands. This plugin package does not
+provide a trial runner or MCP server; it deliberately enables no MCP server.
+There is no published engine release yet, and hook/manifest schema validation
 does not prove end-to-end chat or model delivery.
+
+For local source development, once the foundation source is present:
+
+```sh
+dotnet build src/DotnetNudge/DotnetNudge.csproj
+dotnet run --project src/DotnetNudge/DotnetNudge.csproj -- version
+dotnet run --project src/DotnetNudge/DotnetNudge.csproj -- status --workspace "$PWD" --json
+```
 
 ## Host support
 

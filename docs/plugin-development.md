@@ -96,6 +96,36 @@ and `--replace` only when intentionally replacing an installed engine. Only
 the six declared `linux|osx|win` x64/arm64 RIDs are accepted. Release downloads
 are planned future behavior, not implemented behavior.
 
+## Local engine commands
+
+The foundation executable project is `src/DotnetNudge/DotnetNudge.csproj`.
+These development commands apply when that source is available in the checkout;
+they are not a plugin-install-time build step:
+
+```sh
+dotnet build src/DotnetNudge/DotnetNudge.csproj
+dotnet run --project src/DotnetNudge/DotnetNudge.csproj -- version
+dotnet run --project src/DotnetNudge/DotnetNudge.csproj -- scan --workspace "$PWD" --json
+dotnet run --project src/DotnetNudge/DotnetNudge.csproj -- status --workspace "$PWD" --json
+dotnet run --project src/DotnetNudge/DotnetNudge.csproj -- doctor --workspace "$PWD" --json
+```
+
+The executable CLI contract is:
+
+```text
+version
+scan --workspace PATH [--state-dir PATH] --json
+status --workspace PATH [--state-dir PATH] --json
+doctor [--workspace PATH] [--state-dir PATH] --json
+decision --workspace PATH --finding ID --revision REV --action snooze|skip-version|disable-category|enable-category [--until RFC3339] [--state-dir PATH] --json
+```
+
+`scan` and `status` are read-only assessments. `decision` persists an explicit
+preference and must not run until the user approves its exact workspace,
+finding ID, revision, action, and optional expiry. The `trial` and MCP command
+surfaces are not implemented; do not document or invoke them as working
+commands. None of these commands are executed by the hook launchers.
+
 ## Offline validation
 
 The plugin-contract suite uses only Python's standard library and fixture
