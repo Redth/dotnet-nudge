@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "engine": "dotnet-nudge",
+  "status": "unpublished",
+  "supportedRids": [
+    "linux-x64",
+    "linux-arm64",
+    "osx-x64",
+    "osx-arm64",
+    "win-x64",
+    "win-arm64"
+  ],
+  "archiveContract": "A ZIP or tar archive containing a self-contained publish tree with the RID-appropriate dotnet-nudge executable at its root.",
+  "artifacts": []
+}

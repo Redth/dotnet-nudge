@@ -1,0 +1,18 @@
+{
+  "name": "dotnet-nudge-marketplace",
+  "owner": {
+    "name": "Redth"
+  },
+  "metadata": {
+    "description": "A .NET maintenance plugin with host-specific hooks and shared skills.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "dotnet-nudge",
+      "description": "A .NET maintenance plugin with shared skills and host-specific hooks; engine actions remain explicit.",
+      "version": "0.1.0",
+      "source": "./plugins/dotnet-nudge"
+    }
+  ]
+}
