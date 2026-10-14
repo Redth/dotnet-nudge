@@ -619,6 +619,7 @@ public sealed class ToolchainCompatibilityTests
         Directory.CreateDirectory(outside);
         File.WriteAllText(Path.Combine(root, "safe.json"), "{}");
         File.WriteAllText(Path.Combine(outside, "secret.json"), "{\"secret\":true}");
+        File.WriteAllText(Path.Combine(outside, "data.json"), "{\"secret\":\"ancestor swap\"}");
         var leafLink = Path.Combine(root, "linked.json");
         var ancestorLink = Path.Combine(root, "linked-dir");
         File.CreateSymbolicLink(leafLink, Path.Combine(outside, "secret.json"));
