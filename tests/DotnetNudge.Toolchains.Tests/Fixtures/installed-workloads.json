@@ -1,0 +1,12 @@
+{
+  "mode": "workload-set",
+  "workloadSetVersion": "10.0.102",
+  "manifests": {
+    "microsoft.net.sdk.android": "35.0.50",
+    "microsoft.net.sdk.ios": "26.2.10191"
+  },
+  "workloads": [
+    "microsoft.net.sdk.android",
+    "microsoft.net.sdk.ios"
+  ]
+}

@@ -1,0 +1,26 @@
+name: Toolchains CI
+
+on:
+  push:
+    paths:
+      - "src/DotnetNudge.Toolchains/**"
+      - "tests/DotnetNudge.Toolchains.Tests/**"
+      - ".github/workflows/toolchains-ci.yml"
+  pull_request:
+    paths:
+      - "src/DotnetNudge.Toolchains/**"
+      - "tests/DotnetNudge.Toolchains.Tests/**"
+      - ".github/workflows/toolchains-ci.yml"
+
+jobs:
+  toolchains:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build toolchains library
+        run: dotnet build src/DotnetNudge.Toolchains/DotnetNudge.Toolchains.csproj --configuration Release
+      - name: Test toolchains library
+        run: dotnet test tests/DotnetNudge.Toolchains.Tests/DotnetNudge.Toolchains.Tests.csproj --configuration Release --no-build
