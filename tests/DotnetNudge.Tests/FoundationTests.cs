@@ -229,14 +229,18 @@ public sealed class FoundationTests
         Assert.NotEqual(aFinding.SubjectKey, bFinding.SubjectKey);
         Assert.Contains("A/global.json", aFinding.SubjectKey);
         Assert.Contains("B/global.json", bFinding.SubjectKey);
+        state.Register(a, TimeSpan.FromMinutes(15));
+        state.Register(b, TimeSpan.FromMinutes(15));
         state.QueueScan(left.Workspace.WorkspaceId);
         state.QueueScan(right.Workspace.WorkspaceId);
-        state.Save(left);
+        state.FinishScan(state.LeaseScan("scanner-a", left.Workspace.WorkspaceId)!, "scanner-a",
+            left, null, NudgeState.WorkspaceFingerprint(a));
         var pending = state.Status(right.Workspace.RepositoryId, right.Workspace.WorktreeId,
             right.Workspace.WorkspaceId);
         Assert.Null(pending.ScannedAt);
         Assert.Contains(pending.Coverage, c => c.Check == "scan-job");
-        state.Save(right);
+        state.FinishScan(state.LeaseScan("scanner-b", right.Workspace.WorkspaceId)!, "scanner-b",
+            right, null, NudgeState.WorkspaceFingerprint(b));
         Assert.Equal("10.0.101", state.Latest(left.Workspace.WorkspaceId)!.Findings.Single().Current);
         Assert.Equal("10.0.102", state.Latest(right.Workspace.WorkspaceId)!.Findings.Single().Current);
         var aPayload = JsonSerializer.Serialize(new { cwd = a, session_id = "a" });
@@ -485,7 +489,10 @@ public sealed class FoundationTests
         var clock = new Clock();
         using var state = fixture.State(clock);
         var report = Report(fixture, Finding());
-        state.Save(report);
+        state.Register(fixture.Root, TimeSpan.FromMinutes(15));
+        state.QueueScan(report.Workspace.WorkspaceId);
+        state.FinishScan(state.LeaseScan("scanner")!, "scanner", report, null,
+            NudgeState.WorkspaceFingerprint(fixture.Root));
         var payload = JsonSerializer.Serialize(new { cwd = fixture.Root, session_id = "a" });
         Assert.Equal("{}", HookAdapter.Handle("copilot", "prompt-submit", payload, state));
         var copilot = HookAdapter.Handle("copilot", "session-start", payload, state);

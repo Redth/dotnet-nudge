@@ -1,9 +1,11 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using DotnetNudge.Core;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using Microsoft.Data.Sqlite;
+using NuGet.Configuration;
 
 namespace DotnetNudge.Integration.Tests;
 
@@ -181,6 +183,42 @@ public sealed class ProtocolTests
     }
 
     [Fact]
+    public void QueuedAndFailedRefreshesSuppressCachedFindingsUntilAccepted()
+    {
+        var root = Path.Combine(AppContext.BaseDirectory, "nudge-stale-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var clock = new Clock();
+            using var state = new NudgeState(Path.Combine(root, "state"), clock);
+            var inventory = WorkspaceDiscovery.Discover(root);
+            var finding = new Finding(Contract.Version, "sdk:test", "sdk:test", "rev1",
+                "sdk-servicing", Priority.Low, "10.0.100", "10.0.101",
+                new FindingScope(null, null, "global.json"), Assessment.Confirmed,
+                [], "review", false, "sdk");
+            var report = new ScanReport(Contract.Version, inventory, [finding], [], DateTimeOffset.UtcNow);
+            state.Save(report);
+            StatusReport Status() => state.Status(inventory.RepositoryId, inventory.WorktreeId,
+                inventory.WorkspaceId);
+            Assert.True(Assert.Single(Status().Findings).Eligible);
+            state.Register(root, TimeSpan.FromMinutes(15));
+            state.QueueScan(inventory.WorkspaceId);
+            Assert.Equal("scan-pending", Assert.Single(Status().Findings).Suppression);
+            var job = state.LeaseScan("worker")!;
+            state.FinishScan(job, "worker", null, "failed refresh");
+            Assert.Contains(Status().Coverage, c => c.Check == "snapshot" &&
+                c.Assessment == Assessment.Stale);
+            state.RequestScan(inventory.WorkspaceId);
+            Assert.Equal("scan-pending", Assert.Single(Status().Findings).Suppression);
+            clock.Now = clock.Now.AddMinutes(2);
+            var retry = state.LeaseScan("worker")!;
+            state.FinishScan(retry, "worker", report, null);
+            Assert.True(Assert.Single(Status().Findings).Eligible);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
     public void ReconcileQueuesOnlyChangedScopedInputsAndRecoversExpiredJobs()
     {
         var root = Path.Combine(Path.GetTempPath(), "nudge-reconcile-" + Guid.NewGuid().ToString("N"));
@@ -261,7 +299,8 @@ public sealed class ProtocolTests
             var scope = Path.Combine(root, "scope");
             Directory.CreateDirectory(stateDir);
             Directory.CreateDirectory(scope);
-            using (var connection = new SqliteConnection($"Data Source={Path.Combine(stateDir, "state.sqlite")}"))
+            using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+                { DataSource = Path.Combine(stateDir, "state.sqlite"), Pooling = false }.ToString()))
             {
                 connection.Open();
                 using var command = connection.CreateCommand();
@@ -283,6 +322,46 @@ public sealed class ProtocolTests
     }
 
     [Fact]
+    public async Task ConcurrentFreshStateInitializationDoesNotRaceMigrations()
+    {
+        var root = Path.Combine(AppContext.BaseDirectory, "nudge-concurrent-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var stateDir = Path.Combine(root, "state");
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            async Task<(int ExitCode, string Error)> Start()
+            {
+                using var process = Process.Start(new ProcessStartInfo("dotnet")
+                {
+                    ArgumentList =
+                    {
+                        typeof(DotnetNudge.McpEndpoint).Assembly.Location,
+                        "status", "--workspace", root, "--state-dir", stateDir, "--json"
+                    },
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false
+                })!;
+                var output = process.StandardOutput.ReadToEndAsync(deadline.Token);
+                var error = process.StandardError.ReadToEndAsync(deadline.Token);
+                try { await process.WaitForExitAsync(deadline.Token); }
+                catch (OperationCanceledException)
+                {
+                    if (!process.HasExited) process.Kill(entireProcessTree: true);
+                    throw;
+                }
+                using var response = JsonDocument.Parse(await output);
+                Assert.Equal(Contract.Version, response.RootElement.GetProperty("schemaVersion").GetInt32());
+                return (process.ExitCode, await error);
+            }
+            var results = await Task.WhenAll(Enumerable.Range(0, 6).Select(_ => Start()));
+            Assert.All(results, result => Assert.True(result.ExitCode == 0, result.Error));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
     public void OversizedCachedSnapshotIsRejectedBeforeJsonMaterialization()
     {
         var root = Path.Combine(Path.GetTempPath(), "nudge-oversized-" + Guid.NewGuid().ToString("N"));
@@ -293,7 +372,8 @@ public sealed class ProtocolTests
             using var state = new NudgeState(stateDir);
             var (repo, tree) = WorkspaceDiscovery.Identities(root);
             var workspace = WorkspaceDiscovery.ScopeId(root);
-            using var db = new SqliteConnection($"Data Source={Path.Combine(stateDir, "state.sqlite")}");
+            using var db = new SqliteConnection(new SqliteConnectionStringBuilder
+                { DataSource = Path.Combine(stateDir, "state.sqlite"), Pooling = false }.ToString());
             db.Open();
             using var command = db.CreateCommand();
             command.CommandText = """
@@ -368,7 +448,8 @@ public sealed class ProtocolTests
         {
             var stateDir = Path.Combine(root, "state");
             Directory.CreateDirectory(stateDir);
-            using (var db = new SqliteConnection($"Data Source={Path.Combine(stateDir, "state.sqlite")}"))
+            using (var db = new SqliteConnection(new SqliteConnectionStringBuilder
+                { DataSource = Path.Combine(stateDir, "state.sqlite"), Pooling = false }.ToString()))
             {
                 db.Open();
                 using var command = db.CreateCommand();
@@ -431,6 +512,36 @@ public sealed class ProtocolTests
     }
 
     [Fact]
+    public async Task NativeLookingButUnlaunchableDotnetIsBlockedCoverage()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var root = Path.Combine(AppContext.BaseDirectory, "nudge-unlaunchable-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var original = Environment.GetEnvironmentVariable("DOTNET_ROOT");
+        try
+        {
+            var executable = Path.Combine(root, "dotnet");
+            File.WriteAllBytes(executable, OperatingSystem.IsMacOS()
+                ? [0xfe, 0xed, 0xfa, 0xcf] : [0x7f, (byte)'E', (byte)'L', (byte)'F']);
+            Environment.SetEnvironmentVariable("DOTNET_ROOT", root);
+            var inventory = WorkspaceDiscovery.Discover(root);
+            var denied = await DotnetProbes.ReadAsync(inventory);
+            Assert.Contains(denied.Coverage, c => c.Check == "dotnet-probe" &&
+                c.Assessment == Assessment.Blocked);
+            File.SetUnixFileMode(executable, UnixFileMode.UserRead |
+                UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            var failedLaunch = await DotnetProbes.ReadAsync(inventory);
+            Assert.Contains(failedLaunch.Coverage, c => c.Check == "effective-sdk:." &&
+                c.Assessment == Assessment.Blocked);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("DOTNET_ROOT", original);
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task RestoredGraphBaselineTransitionAndExactGuidanceHandle()
     {
         var root = Path.Combine(Path.GetTempPath(), "nudge-graph-" + Guid.NewGuid().ToString("N"));
@@ -464,12 +575,12 @@ public sealed class ProtocolTests
                 File.WriteAllText(assets, fixture);
                 var stateDir = Path.Combine(root, "state");
                 var inventory = WorkspaceDiscovery.Discover(root);
-                var first = await PackageIntegration.ScanAsync(inventory, stateDir, CancellationToken.None);
+                using var state = new NudgeState(stateDir);
+                using var service = new NudgeService(state);
+                var first = await service.ScanAsync(root);
                 Assert.Empty(first.Findings);
                 Assert.Contains(first.Coverage, c => c.Check == "package-graph:App.csproj" &&
                     c.Assessment == Assessment.Confirmed);
-                using var state = new NudgeState(stateDir);
-                using var service = new NudgeService(state);
                 await Assert.ThrowsAsync<ArgumentException>(() => service.AssessPackageAsync(root,
                     "App.csproj", "net8.0", null, "Acme.Parent",
                     new HashSet<string> { "not-approved" }, acquisitionApproved: false));
@@ -529,6 +640,11 @@ public sealed class ProtocolTests
                     Assert.Equal("Local guidance reference.", payload.RootElement
                         .GetProperty("references")[0].GetProperty("text").GetString());
                 }
+                File.AppendAllText(assets, "\n");
+                var refreshed = await service.PackageContextAsync(root);
+                Assert.NotEqual(handle, refreshed.Skills.Single(s =>
+                    s.Framework == "net8.0" && s.PackageId == "Acme.Parent").Handle);
+                await Assert.ThrowsAsync<InvalidOperationException>(() => service.PackageContextAsync(root, handle));
                 File.WriteAllText(assets, fixture.Replace("1.0.0", "1.0.1", StringComparison.Ordinal));
                 await Assert.ThrowsAsync<InvalidOperationException>(() => service.PackageContextAsync(root, handle));
                 var processStart = new ProcessStartInfo(engine ?? "dotnet")
@@ -553,6 +669,113 @@ public sealed class ProtocolTests
                     f.GetProperty("scope").GetProperty("framework").GetString() == "net8.0" &&
                     f.GetProperty("current").GetString() == "1.0.0" &&
                     f.GetProperty("candidate").GetString() == "1.0.1");
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task PackageScopeLimitReportsUnconsideredDirectScopes()
+    {
+        var root = Path.Combine(AppContext.BaseDirectory, "nudge-package-cap-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var project = Path.Combine(root, "App.csproj");
+            File.WriteAllText(project, """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>""");
+            var feed = Path.Combine(root, "feed");
+            Directory.CreateDirectory(feed);
+            File.WriteAllText(Path.Combine(root, "NuGet.Config"), $"""
+                <configuration><packageSources><clear /><add key="private" value="{feed}" /></packageSources>
+                <packageSourceMapping><packageSource key="private"><package pattern="Acme.*" /></packageSource></packageSourceMapping></configuration>
+                """);
+            var settings = Settings.LoadDefaultSettings(root);
+            Assert.Contains(new PackageSourceProvider(settings).LoadPackageSources(),
+                source => source.Name == "private");
+            var assets = Path.Combine(root, "obj", "project.assets.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(assets)!);
+            var fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "graph.json"))
+                .Replace("{CACHE}", Path.Combine(root, "cache").Replace('\\', '/'), StringComparison.Ordinal)
+                .Replace("{PROJECT}", project.Replace('\\', '/'), StringComparison.Ordinal)
+                .Replace("{OUTPUT}", Path.GetDirectoryName(assets)!.Replace('\\', '/'), StringComparison.Ordinal);
+            var graph = JsonNode.Parse(fixture)!;
+            foreach (var name in new[] { "One", "Two", "Three", "Four" })
+            {
+                var id = "Acme." + name;
+                graph["targets"]!["net8.0"]![id + "/1.0.0"] = JsonNode.Parse("""{"type":"package"}""");
+                graph["libraries"]![id + "/1.0.0"] = JsonNode.Parse(
+                    """{"sha512":"","type":"package","path":"acme.parent/1.0.0","files":[]}""");
+                graph["project"]!["frameworks"]!["net8.0"]!["dependencies"]![id] =
+                    JsonNode.Parse("""{"target":"Package","version":"[1.0.0, )"}""");
+                ((JsonArray)graph["projectFileDependencyGroups"]!["net8.0"]!).Add(id + " >= 1.0.0");
+            }
+            File.WriteAllText(assets, graph.ToJsonString());
+            using var state = new NudgeState(Path.Combine(root, "state"));
+            var result = await PackageIntegration.ScanAsync(WorkspaceDiscovery.Discover(root),
+                state, CancellationToken.None);
+            Assert.Contains(result.Coverage, c => c.Check == "package-check-limit:App.csproj" &&
+                c.Assessment == Assessment.Partial && c.Detail.Contains("2 mapped direct package scopes"));
+            Assert.Contains(result.Coverage, c => c.Check == "package-scan-limit" &&
+                c.Assessment == Assessment.Partial);
+            Assert.Equal(4, result.Coverage.Count(c => c.Check.StartsWith("package-feed:", StringComparison.Ordinal)));
+            File.WriteAllText(Path.Combine(root, "NuGet.Config"), $"""
+                <configuration><packageSources><clear /><add key="private" value="{feed}" /></packageSources>
+                <packageSourceMapping><packageSource key="private"><package pattern="Acme.Four" /></packageSource></packageSourceMapping></configuration>
+                """);
+            File.WriteAllText(assets, graph.ToJsonString());
+            var mappedLast = await PackageIntegration.ScanAsync(WorkspaceDiscovery.Discover(root),
+                state, CancellationToken.None);
+            Assert.Contains(mappedLast.Coverage, c => c.Check.EndsWith(":Acme.Four", StringComparison.Ordinal) &&
+                c.Check.StartsWith("package-feed:", StringComparison.Ordinal));
+            Assert.DoesNotContain(mappedLast.Coverage, c => c.Check == "package-check-limit:App.csproj");
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task FailedScanDoesNotConsumeRestoredGraphTransition()
+    {
+        var root = Path.Combine(AppContext.BaseDirectory, "nudge-graph-retry-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var project = Path.Combine(root, "App.csproj");
+            File.WriteAllText(project, """<Project Sdk="Microsoft.NET.Sdk"/>""");
+            var assets = Path.Combine(root, "obj", "project.assets.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(assets)!);
+            var fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "graph.json"))
+                .Replace("{CACHE}", Path.Combine(root, "cache").Replace('\\', '/'), StringComparison.Ordinal)
+                .Replace("{PROJECT}", project.Replace('\\', '/'), StringComparison.Ordinal)
+                .Replace("{OUTPUT}", Path.GetDirectoryName(assets)!.Replace('\\', '/'), StringComparison.Ordinal);
+            File.WriteAllText(assets, fixture);
+            var clock = new Clock();
+            using var state = new NudgeState(Path.Combine(root, "state"), clock);
+            var inventory = WorkspaceDiscovery.Discover(root);
+            state.Register(root, TimeSpan.FromMinutes(15));
+            state.RequestScan(inventory.WorkspaceId);
+            var firstJob = state.LeaseScan("worker")!;
+            var baseline = await PackageIntegration.ScanAsync(inventory, state, CancellationToken.None);
+            Assert.Empty(baseline.Findings);
+            Assert.Null(state.GraphSnapshot(inventory.WorkspaceId, "App.csproj"));
+            state.FinishScan(firstJob, "worker", new ScanReport(Contract.Version, inventory,
+                baseline.Findings, baseline.Coverage, clock.Now), null);
+            var original = state.GraphSnapshot(inventory.WorkspaceId, "App.csproj");
+            Assert.NotNull(original);
+
+            File.WriteAllText(assets, fixture.Replace("1.0.0", "1.0.1", StringComparison.Ordinal));
+            state.RequestScan(inventory.WorkspaceId);
+            var job = state.LeaseScan("worker")!;
+            var changed = await PackageIntegration.ScanAsync(inventory, state, CancellationToken.None);
+            Assert.Contains(changed.Findings, finding => finding.Kind == "restored-graph-change");
+            Assert.Equal(original, state.GraphSnapshot(inventory.WorkspaceId, "App.csproj"));
+            state.FinishScan(job, "worker", null, "cancelled");
+            Assert.Equal(original, state.GraphSnapshot(inventory.WorkspaceId, "App.csproj"));
+            clock.Now = clock.Now.AddMinutes(2);
+            var retry = state.LeaseScan("worker")!;
+            var replayed = await PackageIntegration.ScanAsync(inventory, state, CancellationToken.None);
+            Assert.Equal(changed.Findings.Select(f => f.Revision), replayed.Findings.Select(f => f.Revision));
+            state.FinishScan(retry, "worker", new ScanReport(Contract.Version, inventory,
+                replayed.Findings, replayed.Coverage, clock.Now), null);
+            Assert.NotEqual(original, state.GraphSnapshot(inventory.WorkspaceId, "App.csproj"));
         }
         finally { Directory.Delete(root, recursive: true); }
     }

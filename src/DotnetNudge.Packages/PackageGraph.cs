@@ -139,9 +139,21 @@ public sealed class GraphTransitions
     {
         _stateFile = stateFile;
         if (stateFile is null || !File.Exists(stateFile)) return;
+        Load(File.ReadAllText(stateFile));
+    }
+
+    public static GraphTransitions FromSnapshot(string? snapshot)
+    {
+        var transitions = new GraphTransitions();
+        if (snapshot is not null) transitions.Load(snapshot);
+        return transitions;
+    }
+
+    private void Load(string snapshot)
+    {
         try
         {
-            var stored = JsonSerializer.Deserialize<StoredGraph>(File.ReadAllText(stateFile))
+            var stored = JsonSerializer.Deserialize<StoredGraph>(snapshot)
                 ?? throw new InvalidDataException("Empty transition state.");
             _sequence = stored.Sequence;
             _previous = new PackageGraph("", "", stored.Nodes.Select(p => new PackageNode(
@@ -200,16 +212,25 @@ public sealed class GraphTransitions
         var parent = Path.GetDirectoryName(Path.GetFullPath(_stateFile))!;
         Directory.CreateDirectory(parent);
         var temp = Path.Combine(parent, Path.GetFileName(_stateFile) + "." + Guid.NewGuid().ToString("N") + ".tmp");
+        try
+        {
+            File.WriteAllText(temp, Serialize(graph, sequence));
+            File.Move(temp, _stateFile, overwrite: true);
+        }
+        finally { if (File.Exists(temp)) File.Delete(temp); }
+    }
+
+    public string Snapshot() => _previous is null
+        ? throw new InvalidOperationException("No complete graph has been observed.")
+        : Serialize(_previous, _sequence);
+
+    private static string Serialize(PackageGraph graph, long sequence)
+    {
         var stored = new StoredGraph(sequence, graph.Packages.Select(p =>
             new StoredNode(p.Project, p.Framework, p.RuntimeIdentifier, p.Id, p.Version.ToString(),
                 p.Direct, p.RequestedRange, p.PackagePath, p.Source, p.Dependencies.ToArray(),
                 p.CentrallyManaged, p.ContentHash)).ToArray());
-        try
-        {
-            File.WriteAllText(temp, JsonSerializer.Serialize(stored));
-            File.Move(temp, _stateFile, overwrite: true);
-        }
-        finally { if (File.Exists(temp)) File.Delete(temp); }
+        return JsonSerializer.Serialize(stored);
     }
 
     private static string Key(PackageNode node) =>

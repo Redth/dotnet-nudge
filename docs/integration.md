@@ -64,10 +64,12 @@ or blocked coverage separately; an observed SDK does not turn a declared pin
 into a confirmed upgrade recommendation. No restore, build, workload update,
 or third-party script is performed, and at most eight execution scopes are
 probed. Settled `project.assets.json` graphs are read per project/TFM/RID,
-with a quiet first baseline and durable external-change deltas. For mapped
-NuGet sources, at most four direct packages per scan receive metadata-only
+with a quiet first baseline and durable external-change deltas. Graph baselines
+and scan findings commit together only after the worker's lease is accepted;
+failed or cancelled scans leave changes available for the next attempt. For mapped
+NuGet sources, at most four direct package scopes per scan receive metadata-only
 candidate/advisory checks; missing, unsettled, unmapped, or unassessed graph
-coverage is explicit. No metadata result proves build/runtime compatibility,
+coverage is explicit for each project/TFM/RID. No metadata result proves build/runtime compatibility,
 and a candidate is never labeled a known security fix without complete audit
 and dependency evidence. `dotnet-nudge package-context --workspace PATH
 [--handle EXACT_HANDLE] --json` exposes inert guidance from exact restored

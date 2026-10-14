@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Security.Cryptography;
 using System.Text;
 using DotnetNudge.Packages;
@@ -21,12 +22,13 @@ public static class PackageIntegration
     const int MaxGuidancePackages = 16;
 
     public static async Task<PackageScanResult> ScanAsync(WorkspaceInventory workspace,
-        string stateDirectory, CancellationToken token)
+        NudgeState state, CancellationToken token)
     {
         var findings = new List<Finding>();
         var coverage = new List<Coverage>();
         var reader = new PackageGraphReader();
         var assessed = 0;
+        var omitted = 0;
         if (workspace.Projects.Count == 0)
             coverage.Add(new("package-graph", Assessment.Unknown,
                 "No SDK-style projects were discovered in the admitted workspace."));
@@ -41,9 +43,21 @@ public static class PackageIntegration
                 continue;
             }
             var filename = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(project)));
-            var history = new GraphTransitions(Path.Combine(stateDirectory, "package-graphs",
-                workspace.WorkspaceId, filename + ".json"));
+            var snapshot = state.GraphSnapshot(workspace.WorkspaceId, project);
+            if (snapshot is null)
+            {
+                var legacy = Path.Combine(state.DirectoryPath, "package-graphs",
+                    workspace.WorkspaceId, filename + ".json");
+                if (File.Exists(legacy))
+                {
+                    if (new FileInfo(legacy).Length > 32 * 1024 * 1024)
+                        throw new InvalidDataException("Legacy package graph exceeds 32 MiB; preserve state.");
+                    snapshot = File.ReadAllText(legacy);
+                }
+            }
+            var history = GraphTransitions.FromSnapshot(snapshot);
             var changes = history.Observe(graph);
+            state.StageGraph(workspace.WorkspaceId, project, history.Snapshot());
             coverage.Add(new(check, Assessment.Confirmed,
                 $"Observed {graph.Packages.Count} resolved project/TFM/RID package entries; " +
                 (changes.Count == 0 ? "no graph delta from baseline." : $"{changes.Count} graph deltas.")));
@@ -60,7 +74,6 @@ public static class PackageIntegration
                     [new Evidence("settled-assets", new Uri(graph.AssetsPath).AbsoluteUri, DateTimeOffset.UtcNow)],
                     "review-external-graph-change", false, "package"));
             }
-            if (assessed >= MaxAssessments) continue;
             PackageSourcePolicy policy;
             try { policy = new PackageSourcePolicy(Path.GetDirectoryName(projectPath)!); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
@@ -69,20 +82,28 @@ public static class PackageIntegration
                 continue;
             }
             var intelligence = new PackageIntelligence(policy);
-            foreach (var node in graph.Packages.Where(n => n.Direct)
+            var direct = graph.Packages.Where(n => n.Direct)
                 .DistinctBy(n => (n.Framework, n.RuntimeIdentifier, n.Id))
-                .Take(MaxAssessments - assessed))
+                .ToArray();
+            var skipped = 0;
+            foreach (var node in direct)
             {
                 token.ThrowIfCancellationRequested();
+                var feedCheck = $"package-feed:{project}:{node.Framework}:{node.RuntimeIdentifier ?? "any"}:{node.Id}";
                 if (policy.Allowed(node.Id).Count == 0)
                 {
-                    coverage.Add(new("package-feed:" + project + ":" + node.Id, Assessment.Unknown,
+                    coverage.Add(new(feedCheck, Assessment.Unknown,
                         "No mapped source; candidate metadata requires an explicitly approved source."));
+                    continue;
+                }
+                if (assessed >= MaxAssessments)
+                {
+                    skipped++;
                     continue;
                 }
                 assessed++;
                 var assessment = await intelligence.AssessAsync(node, graph, cancellationToken: token);
-                coverage.Add(new("package-feed:" + project + ":" + node.Id, Map(assessment.Status),
+                coverage.Add(new(feedCheck, Map(assessment.Status),
                     assessment.Diagnostics.Count == 0
                         ? $"Checked permitted audit and candidate metadata for {node.Framework}."
                         : string.Join("; ", assessment.Diagnostics)));
@@ -119,10 +140,16 @@ public static class PackageIntegration
                     candidate?.Kind == "major" ? "review-major-package-trial" :
                     "review-package-metadata-and-trial", true, "package"));
             }
+            if (skipped > 0)
+            {
+                omitted += skipped;
+                coverage.Add(new("package-check-limit:" + project, Assessment.Partial,
+                    $"{skipped} mapped direct package scopes were not assessed after the {MaxAssessments}-scope limit."));
+            }
         }
-        if (workspace.Projects.Count > MaxGraphs || assessed == MaxAssessments)
+        if (workspace.Projects.Count > MaxGraphs || omitted > 0)
             coverage.Add(new("package-scan-limit", Assessment.Partial,
-                $"Read at most {MaxGraphs} project graphs and assessed at most {MaxAssessments} mapped direct packages."));
+                $"Read at most {MaxGraphs} project graphs; {omitted} mapped direct scopes were not assessed."));
         return new(findings, coverage);
     }
 
@@ -168,11 +195,16 @@ public static class PackageIntegration
                 }
                 foreach (var skill in guidance.Skills)
                 {
-                    var descriptor = new PackageSkillDescriptor(skill.Handle, skill.Name, skill.Description,
+                    var identity = $"{skill.Handle}\0{graph.Fingerprint}\0{skill.Entry.Path}";
+                    var exactHandle = "skill:" + Convert.ToHexString(
+                        SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
+                    var descriptor = new PackageSkillDescriptor(exactHandle, skill.Name, skill.Description,
                         project, node.Framework, node.RuntimeIdentifier, node.Id,
                         node.Version.ToNormalizedString(), node.Source, node.ContentHash, graph.Fingerprint);
                     skills.Add(descriptor);
-                    if (handle != skill.Handle) continue;
+                    if (handle != exactHandle) continue;
+                    if (selected is not null)
+                        throw new InvalidDataException("Multiple restored skills match this handle.");
                     selected = descriptor;
                     entry = skill.Entry;
                     references = skill.References;
@@ -192,12 +224,22 @@ public static class PackageIntegration
             throw new InvalidOperationException("Skill handle is not present in the current exact restored graph.");
         if (workspace.Projects.Count > MaxGraphs)
             diagnostics.Add($"Guidance limited to {MaxGraphs} project graphs.");
+        void VerifySelectedAssets()
+        {
+            if (selected is null) return;
+            var (current, _) = ReadGraph(workspace, selected.Project, reader);
+            if (current.Status != EvidenceStatus.Complete ||
+                current.Fingerprint != selected.AssetsFingerprint)
+                throw new InvalidOperationException(
+                    "Restored assets changed while reading the selected skill; request a new handle.");
+        }
+        VerifySelectedAssets();
         if (entry is not null && Environment.GetEnvironmentVariable("NUDGE_INSPECTOR_PATH")
             is { Length: > 0 } executable)
         {
             bool native;
             try { native = DotnetProbes.IsNativeExecutable(executable); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or Win32Exception)
             {
                 diagnostics.Add($"Configured inspector could not be inspected ({ex.Message}); local reader was used.");
                 native = false;
@@ -230,6 +272,7 @@ public static class PackageIntegration
                     "Pinned inspector row was missing or ambiguous for the selected package scope; local reader was used.");
             }
         }
+        VerifySelectedAssets();
         return new(Contract.Version, workspace.WorkspaceId,
             diagnostics.Count == 0 ? Assessment.Confirmed :
                 workspace.Projects.Count == 0 ? Assessment.Unknown : Assessment.Partial, skills,
@@ -245,6 +288,7 @@ public static class PackageIntegration
         if (!acquisitionApproved || approvedSourceNames.Count == 0 ||
             approvedSourceNames.Any(string.IsNullOrWhiteSpace))
             throw new ArgumentException("Explicit metadata acquisition approval and exact source names are required.");
+        approvedSourceNames = new HashSet<string>(approvedSourceNames, StringComparer.OrdinalIgnoreCase);
         if (!workspace.Projects.Contains(project, StringComparer.Ordinal))
             throw new ArgumentException("Project must be an exact relative path in the admitted workspace.");
         var reader = new PackageGraphReader();

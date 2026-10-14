@@ -119,6 +119,8 @@ public sealed class NudgeTools(McpStateDirectory location)
         bool acquisitionApproved, string? runtimeIdentifier = null,
         CancellationToken cancellationToken = default)
     {
+        if (approvedSources is not { Length: > 0 })
+            throw new McpException("At least one exact configured source name is required.");
         var root = await RootAsync(server, workspace, cancellationToken);
         return await WithServiceAsync(async service => JsonSerializer.Serialize(
             await service.AssessPackageAsync(root, project, framework, runtimeIdentifier, packageId,

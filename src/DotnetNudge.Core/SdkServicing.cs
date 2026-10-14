@@ -256,7 +256,7 @@ public sealed class NudgeScanner(IReleaseMetadata metadata, TimeProvider? clock 
         var (findings, sdkCoverage) = await SdkServicing.CheckAsync(inventory, metadata, clock, cancellationToken);
         var observed = probeInstalled ? await DotnetProbes.ReadAsync(inventory, cancellationToken) : null;
         var packages = state is null ? null : await PackageIntegration.ScanAsync(inventory,
-            state.DirectoryPath, cancellationToken);
+            state, cancellationToken);
         return new(Contract.Version, inventory, findings.Concat(packages?.Findings ?? []).ToArray(),
             inventory.Coverage.Where(c => observed is null || c.Check != "effective-sdk")
                 .Where(c => packages is null || c.Check != "nuget-resolved-graph")

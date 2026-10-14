@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.ComponentModel;
 using System.Text;
 
 namespace DotnetNudge.Core;
@@ -21,7 +22,7 @@ public static class DotnetProbes
         var coverage = new List<Coverage>();
         string? executable;
         try { executable = FindExecutable(); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or Win32Exception)
         {
             coverage.Add(new("dotnet-probe", Assessment.Blocked,
                 $"Could not inspect the configured dotnet executable: {ex.Message}"));
@@ -77,7 +78,12 @@ public static class DotnetProbes
     public static bool IsNativeExecutable(string file)
     {
         if (!File.Exists(file)) return false;
-        using var stream = File.OpenRead(WorkspaceDiscovery.Canonical(file));
+        file = WorkspaceDiscovery.Canonical(file);
+        if (!OperatingSystem.IsWindows() &&
+            (File.GetUnixFileMode(file) & (UnixFileMode.UserExecute |
+                UnixFileMode.GroupExecute | UnixFileMode.OtherExecute)) == 0)
+            return false;
+        using var stream = File.OpenRead(file);
         Span<byte> signature = stackalloc byte[4];
         if (stream.Read(signature) != 4) return false;
         if (OperatingSystem.IsWindows())
@@ -142,7 +148,8 @@ public static class DotnetProbes
                 }
             }
         }
-        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException
+            or Win32Exception)
         {
             coverage.Add(new(check, Assessment.Blocked,
                 ex.Message.Length > 300 ? ex.Message[..300] : ex.Message));

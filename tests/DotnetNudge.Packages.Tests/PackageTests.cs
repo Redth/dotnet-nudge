@@ -23,8 +23,9 @@ public sealed class PackageTests
             Directory.CreateDirectory(Path.Combine(Cache, "acme.child", "1.2.0"));
             File.WriteAllText(Project, "<Project />");
             var fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "graph.json"))
-                .Replace("{PROJECT}", Project).Replace("{CACHE}", Cache)
-                .Replace("{OUTPUT}", Path.Combine(Root, "obj"))
+                .Replace("{PROJECT}", Project.Replace('\\', '/'))
+                .Replace("{CACHE}", Cache.Replace('\\', '/'))
+                .Replace("{OUTPUT}", Path.Combine(Root, "obj").Replace('\\', '/'))
                 .Replace("\"version\": 4", $"\"version\": {schema}", StringComparison.Ordinal);
             File.WriteAllText(Assets, fixture);
         }
@@ -45,7 +46,9 @@ public sealed class PackageTests
                 Assert.Equal("[1.0.0, )", p.RequestedRange); Assert.Equal("", p.ContentHash); });
         Assert.All(graph.Packages.Where(p => p.Id == "Acme.Child"), p => Assert.False(p.Direct));
         Assert.Contains(graph.Packages, p => p.RuntimeIdentifier == "osx-arm64" &&
-            p.PackagePath == Path.Combine(fixture.Cache, "acme.child", "1.2.0"));
+            p.PackagePath is not null &&
+            Path.GetFullPath(p.PackagePath) ==
+                Path.GetFullPath(Path.Combine(fixture.Cache, "acme.child", "1.2.0")));
     }
 
     [Fact]

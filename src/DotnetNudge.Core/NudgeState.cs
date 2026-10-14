@@ -11,6 +11,7 @@ public sealed class NudgeState : IDisposable
     public string DirectoryPath { get; }
     readonly SqliteConnection connection;
     readonly TimeProvider clock;
+    readonly Dictionary<(string Workspace, string Project), string> stagedGraphs = new();
 
     public static string DefaultDirectory =>
         Environment.GetEnvironmentVariable("NUDGE_STATE_DIR") is { Length: > 0 } path
@@ -34,8 +35,11 @@ public sealed class NudgeState : IDisposable
         {
             connection.Open();
             using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;";
+            command.ExecuteNonQuery();
+            using var migration = connection.BeginTransaction();
+            command.Transaction = migration;
             command.CommandText = """
-            PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
             INSERT INTO schema_version SELECT 3 WHERE NOT EXISTS (SELECT 1 FROM schema_version);
             """;
@@ -70,7 +74,10 @@ public sealed class NudgeState : IDisposable
               fetched INTEGER
             );
             CREATE TABLE IF NOT EXISTS workspace_scan_jobs (
-              workspace TEXT PRIMARY KEY, requested INTEGER NOT NULL, status TEXT NOT NULL
+              workspace TEXT PRIMARY KEY, requested INTEGER NOT NULL, status TEXT NOT NULL,
+              owner TEXT, lease_until INTEGER NOT NULL DEFAULT 0,
+              attempts INTEGER NOT NULL DEFAULT 0, error TEXT,
+              next_retry INTEGER NOT NULL DEFAULT 0, stale INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS workspace_registration (
               workspace TEXT PRIMARY KEY, root TEXT NOT NULL, repository TEXT NOT NULL,
@@ -81,17 +88,22 @@ public sealed class NudgeState : IDisposable
               workspace TEXT NOT NULL, owner TEXT NOT NULL, active_until INTEGER NOT NULL,
               PRIMARY KEY(workspace,owner)
             );
+            CREATE TABLE IF NOT EXISTS workspace_graphs (
+              workspace TEXT NOT NULL, project TEXT NOT NULL, snapshot TEXT NOT NULL,
+              PRIMARY KEY(workspace,project)
+            );
             """;
             command.ExecuteNonQuery();
-            if (version == 1) MigrateV1();
-            AddJobColumn("owner", "TEXT");
-            AddJobColumn("lease_until", "INTEGER NOT NULL DEFAULT 0");
-            AddJobColumn("attempts", "INTEGER NOT NULL DEFAULT 0");
-            AddJobColumn("error", "TEXT");
-            AddJobColumn("next_retry", "INTEGER NOT NULL DEFAULT 0");
-            AddJobColumn("stale", "INTEGER NOT NULL DEFAULT 0");
+            if (version == 1) MigrateV1(migration);
+            AddJobColumn(migration, "owner", "TEXT");
+            AddJobColumn(migration, "lease_until", "INTEGER NOT NULL DEFAULT 0");
+            AddJobColumn(migration, "attempts", "INTEGER NOT NULL DEFAULT 0");
+            AddJobColumn(migration, "error", "TEXT");
+            AddJobColumn(migration, "next_retry", "INTEGER NOT NULL DEFAULT 0");
+            AddJobColumn(migration, "stale", "INTEGER NOT NULL DEFAULT 0");
             using (var columns = connection.CreateCommand())
             {
+                columns.Transaction = migration;
                 columns.CommandText = "PRAGMA table_info(metadata)";
                 var hasFetched = false;
                 using (var reader = columns.ExecuteReader())
@@ -106,6 +118,7 @@ public sealed class NudgeState : IDisposable
             }
             using (var columns = connection.CreateCommand())
             {
+                columns.Transaction = migration;
                 columns.CommandText = "PRAGMA table_info(workspace_registration)";
                 using var reader = columns.ExecuteReader();
                 var hasFingerprint = false;
@@ -137,6 +150,7 @@ public sealed class NudgeState : IDisposable
                 AND candidate IS NOT NULL AND revision IS NOT NULL;
                 """;
             command.ExecuteNonQuery();
+            migration.Commit();
         }
         catch
         {
@@ -145,9 +159,10 @@ public sealed class NudgeState : IDisposable
         }
     }
 
-    void AddJobColumn(string name, string type)
+    void AddJobColumn(SqliteTransaction transaction, string name, string type)
     {
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = "PRAGMA table_info(workspace_scan_jobs)";
         using (var reader = command.ExecuteReader())
             while (reader.Read())
@@ -156,9 +171,8 @@ public sealed class NudgeState : IDisposable
         command.ExecuteNonQuery();
     }
 
-    void MigrateV1()
+    void MigrateV1(SqliteTransaction transaction)
     {
-        using var transaction = connection.BeginTransaction();
         using var read = connection.CreateCommand();
         read.Transaction = transaction;
         read.CommandText = "SELECT length(CAST(report AS BLOB)), report, scanned FROM snapshots";
@@ -198,7 +212,6 @@ public sealed class NudgeState : IDisposable
         jobs.ExecuteNonQuery();
         jobs.CommandText = "UPDATE schema_version SET version=2";
         jobs.ExecuteNonQuery();
-        transaction.Commit();
     }
 
     public void Save(ScanReport report)
@@ -566,12 +579,12 @@ public sealed class NudgeState : IDisposable
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO workspace_scan_jobs(workspace,requested,status)
-            SELECT $s,$now,'pending' WHERE NOT EXISTS (
+            INSERT INTO workspace_scan_jobs(workspace,requested,status,stale)
+            SELECT $s,$now,'pending',1 WHERE NOT EXISTS (
               SELECT 1 FROM workspace_snapshots snapshot
               JOIN workspace_registration registration ON registration.workspace=snapshot.workspace
               WHERE snapshot.workspace=$s AND registration.fingerprint IS NOT NULL)
-            ON CONFLICT(workspace) DO NOTHING
+            ON CONFLICT(workspace) DO UPDATE SET stale=1
             """;
         command.Parameters.AddWithValue("$s", workspace);
         command.Parameters.AddWithValue("$now", clock.GetUtcNow().ToUnixTimeSeconds());
@@ -582,9 +595,13 @@ public sealed class NudgeState : IDisposable
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO workspace_scan_jobs(workspace,requested,status) VALUES($s,$now,'pending')
-            ON CONFLICT(workspace) DO UPDATE SET status='pending',requested=$now,
-            attempts=0,error=NULL,next_retry=0,stale=1 WHERE status='failed'
+            INSERT INTO workspace_scan_jobs(workspace,requested,status,stale) VALUES($s,$now,'pending',1)
+            ON CONFLICT(workspace) DO UPDATE SET stale=1,
+            status=CASE WHEN status='failed' THEN 'pending' ELSE status END,
+            requested=CASE WHEN status='failed' THEN $now ELSE requested END,
+            attempts=CASE WHEN status='failed' THEN 0 ELSE attempts END,
+            error=CASE WHEN status='failed' THEN NULL ELSE error END,
+            next_retry=CASE WHEN status='failed' THEN 0 ELSE next_retry END
             """;
         command.Parameters.AddWithValue("$s", workspace);
         command.Parameters.AddWithValue("$now", clock.GetUtcNow().ToUnixTimeSeconds());
@@ -735,8 +752,45 @@ public sealed class NudgeState : IDisposable
         return job;
     }
 
+    public string? GraphSnapshot(string workspace, string project)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT length(CAST(snapshot AS BLOB)),snapshot FROM workspace_graphs
+            WHERE workspace=$workspace AND project=$project
+            """;
+        command.Parameters.AddWithValue("$workspace", workspace);
+        command.Parameters.AddWithValue("$project", project);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read()) return null;
+        if (reader.GetInt64(0) > 32 * 1024 * 1024)
+            throw new InvalidDataException("Stored package graph exceeds 32 MiB; preserve state.");
+        return reader.GetString(1);
+    }
+
+    public void StageGraph(string workspace, string project, string snapshot)
+    {
+        if (Encoding.UTF8.GetByteCount(snapshot) > 32 * 1024 * 1024)
+            throw new InvalidDataException("Package graph exceeds 32 MiB; narrow the admitted workspace.");
+        stagedGraphs[(workspace, project)] = snapshot;
+    }
+
     public void FinishScan(ScanJob job, string owner, ScanReport? report, string? error,
         string? inputFingerprint = null)
+    {
+        try
+        {
+            CommitScan(job, owner, report, error, inputFingerprint);
+        }
+        finally
+        {
+            foreach (var key in stagedGraphs.Keys.Where(key => key.Workspace == job.Workspace).ToArray())
+                stagedGraphs.Remove(key);
+        }
+    }
+
+    void CommitScan(ScanJob job, string owner, ScanReport? report, string? error,
+        string? inputFingerprint)
     {
         using var transaction = connection.BeginTransaction();
         using var command = connection.CreateCommand();
@@ -765,6 +819,21 @@ public sealed class NudgeState : IDisposable
             command.Parameters.AddWithValue("$body", SerializeReport(report));
             command.Parameters.AddWithValue("$scanned", report.ScannedAt.ToUnixTimeSeconds());
             command.ExecuteNonQuery();
+            foreach (var (key, snapshot) in stagedGraphs.Where(entry =>
+                entry.Key.Workspace == job.Workspace))
+            {
+                using var graph = connection.CreateCommand();
+                graph.Transaction = transaction;
+                graph.CommandText = """
+                    INSERT INTO workspace_graphs(workspace,project,snapshot)
+                    VALUES($workspace,$project,$snapshot)
+                    ON CONFLICT(workspace,project) DO UPDATE SET snapshot=$snapshot
+                    """;
+                graph.Parameters.AddWithValue("$workspace", key.Workspace);
+                graph.Parameters.AddWithValue("$project", key.Project);
+                graph.Parameters.AddWithValue("$snapshot", snapshot);
+                graph.ExecuteNonQuery();
+            }
             if (inputFingerprint is not null)
             {
                 command.CommandText = """
