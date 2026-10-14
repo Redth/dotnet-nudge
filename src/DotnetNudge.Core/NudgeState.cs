@@ -1,11 +1,13 @@
 using System.Text.Json;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Data.Sqlite;
 
 namespace DotnetNudge.Core;
 
 public sealed class NudgeState : IDisposable
 {
-    const int StateSchemaVersion = 2;
+    const int StateSchemaVersion = 3;
     readonly SqliteConnection connection;
     readonly TimeProvider clock;
 
@@ -31,12 +33,12 @@ public sealed class NudgeState : IDisposable
             command.CommandText = """
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
-            INSERT INTO schema_version SELECT 2 WHERE NOT EXISTS (SELECT 1 FROM schema_version);
+            INSERT INTO schema_version SELECT 3 WHERE NOT EXISTS (SELECT 1 FROM schema_version);
             """;
             command.ExecuteNonQuery();
             command.CommandText = "SELECT version FROM schema_version";
             var version = Convert.ToInt32(command.ExecuteScalar());
-            if (version is not (1 or StateSchemaVersion))
+            if (version is not (1 or 2 or StateSchemaVersion))
                 throw new InvalidDataException("Unsupported dotnet-nudge state schema; preserve the database and use a compatible version.");
             command.CommandText = """
             CREATE TABLE IF NOT EXISTS workspace_snapshots (
@@ -65,9 +67,48 @@ public sealed class NudgeState : IDisposable
             CREATE TABLE IF NOT EXISTS workspace_scan_jobs (
               workspace TEXT PRIMARY KEY, requested INTEGER NOT NULL, status TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS workspace_registration (
+              workspace TEXT PRIMARY KEY, root TEXT NOT NULL, repository TEXT NOT NULL,
+              worktree TEXT NOT NULL, last_seen INTEGER NOT NULL, active_until INTEGER NOT NULL,
+              fingerprint TEXT
+            );
+            CREATE TABLE IF NOT EXISTS workspace_sessions (
+              workspace TEXT NOT NULL, owner TEXT NOT NULL, active_until INTEGER NOT NULL,
+              PRIMARY KEY(workspace,owner)
+            );
             """;
             command.ExecuteNonQuery();
             if (version == 1) MigrateV1();
+            AddJobColumn("owner", "TEXT");
+            AddJobColumn("lease_until", "INTEGER NOT NULL DEFAULT 0");
+            AddJobColumn("attempts", "INTEGER NOT NULL DEFAULT 0");
+            AddJobColumn("error", "TEXT");
+            AddJobColumn("next_retry", "INTEGER NOT NULL DEFAULT 0");
+            using (var columns = connection.CreateCommand())
+            {
+                columns.CommandText = "PRAGMA table_info(workspace_registration)";
+                using var reader = columns.ExecuteReader();
+                var hasFingerprint = false;
+                while (reader.Read())
+                    hasFingerprint |= reader.GetString(1) == "fingerprint";
+                reader.Close();
+                if (!hasFingerprint)
+                {
+                    columns.CommandText = "ALTER TABLE workspace_registration ADD COLUMN fingerprint TEXT";
+                    columns.ExecuteNonQuery();
+                }
+            }
+            if (version < 3)
+            {
+                command.CommandText = """
+                    INSERT OR IGNORE INTO workspace_registration(workspace,root,repository,worktree,last_seen,active_until)
+                    SELECT workspace,json_extract(report,'$.workspace.root'),repository,worktree,scanned,0
+                    FROM workspace_snapshots
+                    WHERE json_valid(report) AND json_extract(report,'$.workspace.root') IS NOT NULL;
+                    UPDATE schema_version SET version=3;
+                    """;
+                command.ExecuteNonQuery();
+            }
             command.CommandText = """
                 INSERT OR IGNORE INTO version_skips(repository,subject,category,candidate,revision,recorded)
                 SELECT repository,subject,category,candidate,revision,recorded FROM decisions
@@ -82,6 +123,17 @@ public sealed class NudgeState : IDisposable
             connection.Dispose();
             throw;
         }
+    }
+
+    void AddJobColumn(string name, string type)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA table_info(workspace_scan_jobs)";
+        using (var reader = command.ExecuteReader())
+            while (reader.Read())
+                if (reader.GetString(1) == name) return;
+        command.CommandText = $"ALTER TABLE workspace_scan_jobs ADD COLUMN {name} {type}";
+        command.ExecuteNonQuery();
     }
 
     void MigrateV1()
@@ -123,8 +175,7 @@ public sealed class NudgeState : IDisposable
             LEFT JOIN workspace_snapshots s ON s.worktree=j.worktree
             """;
         jobs.ExecuteNonQuery();
-        jobs.CommandText = "UPDATE schema_version SET version=$version";
-        jobs.Parameters.AddWithValue("$version", StateSchemaVersion);
+        jobs.CommandText = "UPDATE schema_version SET version=2";
         jobs.ExecuteNonQuery();
         transaction.Commit();
     }
@@ -145,7 +196,9 @@ public sealed class NudgeState : IDisposable
         command.Parameters.AddWithValue("$body", JsonSerializer.Serialize(report, Contract.Json));
         command.Parameters.AddWithValue("$time", report.ScannedAt.ToUnixTimeSeconds());
         command.ExecuteNonQuery();
-        command.CommandText = "DELETE FROM workspace_scan_jobs WHERE workspace=$s";
+        command.CommandText = """
+            DELETE FROM workspace_scan_jobs WHERE workspace=$s AND requested <= $time
+            """;
         command.ExecuteNonQuery();
         transaction.Commit();
     }
@@ -163,11 +216,14 @@ public sealed class NudgeState : IDisposable
     {
         var report = Latest(workspace);
         using var job = connection.CreateCommand();
-        job.CommandText = "SELECT status FROM workspace_scan_jobs WHERE workspace=$s";
+        job.CommandText = "SELECT status,error FROM workspace_scan_jobs WHERE workspace=$s";
         job.Parameters.AddWithValue("$s", workspace);
-        var pending = job.ExecuteScalar() is string status
-            ? new Coverage("scan-job", Assessment.Partial,
-                $"A {status} scan is queued; no background worker is available in this foundation.")
+        using var row = job.ExecuteReader();
+        var pending = row.Read()
+            ? new Coverage("scan-job", row.GetString(0) == "failed" ? Assessment.Blocked : Assessment.Partial,
+                row.GetString(0) == "failed"
+                    ? $"Scan failed: {(row.IsDBNull(1) ? "unknown error" : row.GetString(1))}; request a new scan."
+                    : $"A {row.GetString(0)} scan is queued; start MCP or run scan explicitly.")
             : null;
         if (report is null)
             return new(Contract.Version, repository, worktree, workspace, null, [],
@@ -392,16 +448,248 @@ public sealed class NudgeState : IDisposable
         command.ExecuteNonQuery();
     }
 
+    public void Register(string root, TimeSpan activeFor, string owner = "manual")
+    {
+        root = WorkspaceDiscovery.Canonical(root);
+        if (!Directory.Exists(root)) throw new DirectoryNotFoundException(root);
+        var (repository, worktree) = WorkspaceDiscovery.Identities(root);
+        var workspace = WorkspaceDiscovery.ScopeId(root);
+        using var transaction = connection.BeginTransaction();
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO workspace_registration(workspace,root,repository,worktree,last_seen,active_until)
+            VALUES($s,$root,$repository,$worktree,$now,$active)
+            ON CONFLICT(workspace) DO UPDATE SET root=$root,repository=$repository,
+            worktree=$worktree,last_seen=$now,active_until=$active
+            """;
+        command.Parameters.AddWithValue("$s", workspace);
+        command.Parameters.AddWithValue("$root", root);
+        command.Parameters.AddWithValue("$repository", repository);
+        command.Parameters.AddWithValue("$worktree", worktree);
+        command.Parameters.AddWithValue("$now", clock.GetUtcNow().ToUnixTimeSeconds());
+        command.Parameters.AddWithValue("$active", clock.GetUtcNow().Add(activeFor).ToUnixTimeSeconds());
+        command.ExecuteNonQuery();
+        command.CommandText = """
+            INSERT INTO workspace_sessions(workspace,owner,active_until) VALUES($s,$owner,$active)
+            ON CONFLICT(workspace,owner) DO UPDATE SET active_until=$active
+            """;
+        command.Parameters.AddWithValue("$owner", owner);
+        command.ExecuteNonQuery();
+        transaction.Commit();
+    }
+
+    public void Close(string root, string owner = "manual")
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM workspace_sessions WHERE workspace=$s AND owner=$owner";
+        command.Parameters.AddWithValue("$s", WorkspaceDiscovery.ScopeId(root));
+        command.Parameters.AddWithValue("$owner", owner);
+        command.ExecuteNonQuery();
+    }
+
     public void QueueScan(string workspace)
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
             INSERT INTO workspace_scan_jobs(workspace,requested,status) VALUES($s,$now,'pending')
-            ON CONFLICT(workspace) DO UPDATE SET requested=$now,status='pending'
+            ON CONFLICT(workspace) DO NOTHING
             """;
         command.Parameters.AddWithValue("$s", workspace);
         command.Parameters.AddWithValue("$now", clock.GetUtcNow().ToUnixTimeSeconds());
         command.ExecuteNonQuery();
+    }
+
+    public void RequestScan(string workspace)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO workspace_scan_jobs(workspace,requested,status) VALUES($s,$now,'pending')
+            ON CONFLICT(workspace) DO UPDATE SET status='pending',requested=$now,
+            attempts=0,error=NULL,next_retry=0 WHERE status='failed'
+            """;
+        command.Parameters.AddWithValue("$s", workspace);
+        command.Parameters.AddWithValue("$now", clock.GetUtcNow().ToUnixTimeSeconds());
+        command.ExecuteNonQuery();
+    }
+
+    public void Reconcile()
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT workspace,root,fingerprint FROM workspace_registration r WHERE EXISTS
+            (SELECT 1 FROM workspace_sessions s WHERE s.workspace=r.workspace AND s.active_until>$now)
+            """;
+        command.Parameters.AddWithValue("$now", clock.GetUtcNow().ToUnixTimeSeconds());
+        var registered = new List<(string Workspace, string Root, string? Fingerprint)>();
+        using (var reader = command.ExecuteReader())
+            while (reader.Read())
+                registered.Add((reader.GetString(0), reader.GetString(1),
+                    reader.IsDBNull(2) ? null : reader.GetString(2)));
+        foreach (var (workspace, root, previous) in registered)
+        {
+            if (!Directory.Exists(root) || WorkspaceDiscovery.ScopeId(root) != workspace) continue;
+            var current = Fingerprint(root);
+            if (current == previous) continue;
+            using var transaction = connection.BeginTransaction();
+            command.Transaction = transaction;
+            command.Parameters.Clear();
+            command.CommandText = """
+                UPDATE workspace_registration SET fingerprint=$fingerprint WHERE workspace=$s
+                AND (fingerprint=$previous OR (fingerprint IS NULL AND $previous IS NULL))
+                """;
+            command.Parameters.AddWithValue("$s", workspace);
+            command.Parameters.AddWithValue("$fingerprint", current);
+            command.Parameters.AddWithValue("$previous", (object?)previous ?? DBNull.Value);
+            if (command.ExecuteNonQuery() == 1)
+            {
+                command.CommandText = """
+                    INSERT INTO workspace_scan_jobs(workspace,requested,status) VALUES($s,$now,'pending')
+                    ON CONFLICT(workspace) DO UPDATE SET
+                    requested=MAX(workspace_scan_jobs.requested+1,$now),
+                    status=CASE WHEN status='running' THEN 'running' ELSE 'pending' END,
+                    attempts=CASE WHEN status='running' THEN attempts ELSE 0 END,
+                    error=NULL,next_retry=0
+                    """;
+                command.Parameters.AddWithValue("$now", clock.GetUtcNow().ToUnixTimeSeconds());
+                command.ExecuteNonQuery();
+            }
+            transaction.Commit();
+        }
+    }
+
+    static string Fingerprint(string root)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var count = 0;
+        void Walk(string directory, int depth)
+        {
+            if (depth > 20) return;
+            foreach (var path in Directory.EnumerateFiles(directory).Order(StringComparer.Ordinal))
+            {
+                if (++count > 10000) throw new InvalidDataException("Workspace fingerprint exceeds 10,000 files.");
+                var name = Path.GetFileName(path);
+                if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0 ||
+                    !(name is "global.json" or "project.assets.json" or "packages.lock.json"
+                    or "Directory.Packages.props" or "NuGet.Config" or "nuget.config"
+                    || name.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)
+                    || name.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase)
+                    || name.EndsWith(".vbproj", StringComparison.OrdinalIgnoreCase))) continue;
+                var info = new FileInfo(path);
+                var line = $"{Path.GetRelativePath(root, path)}|{info.Length}|{info.LastWriteTimeUtc.Ticks}\n";
+                hash.AppendData(Encoding.UTF8.GetBytes(line));
+            }
+            foreach (var child in Directory.EnumerateDirectories(directory).Order(StringComparer.Ordinal))
+            {
+                if ((File.GetAttributes(child) & FileAttributes.ReparsePoint) != 0) continue;
+                var name = Path.GetFileName(child);
+                if (name is ".git" or "node_modules" or "bin" or ".vs" or ".idea" or "vendor")
+                    continue;
+                Walk(child, depth + 1);
+            }
+        }
+        Walk(root, 0);
+        return Convert.ToHexString(hash.GetHashAndReset());
+    }
+
+    public string? AdmittedRoot(string workspace)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT root FROM workspace_registration WHERE workspace=$s";
+        command.Parameters.AddWithValue("$s", workspace);
+        if (command.ExecuteScalar() is not string root) return null;
+        return Directory.Exists(root) && WorkspaceDiscovery.ScopeId(root) == workspace ? root : null;
+    }
+
+    public ScanJob? LeaseScan(string owner, string? workspace = null)
+    {
+        var now = clock.GetUtcNow().ToUnixTimeSeconds();
+        using var transaction = connection.BeginTransaction();
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT j.workspace,r.root,j.requested,j.attempts FROM workspace_scan_jobs j
+            JOIN workspace_registration r ON r.workspace=j.workspace
+            WHERE EXISTS(SELECT 1 FROM workspace_sessions s
+              WHERE s.workspace=r.workspace AND s.active_until>$now)
+            AND ($scope IS NULL OR j.workspace=$scope)
+            AND j.next_retry<=$now AND j.attempts<3
+            AND (j.status='pending' OR (j.status='running' AND j.lease_until<=$now))
+            ORDER BY j.requested LIMIT 1
+            """;
+        command.Parameters.AddWithValue("$now", now);
+        command.Parameters.AddWithValue("$scope", (object?)workspace ?? DBNull.Value);
+        using var reader = command.ExecuteReader();
+        ScanJob? job = reader.Read()
+            ? new(reader.GetString(0), reader.GetString(1), reader.GetInt64(2), reader.GetInt32(3) + 1)
+            : null;
+        reader.Close();
+        if (job is null) return null;
+        command.CommandText = """
+            UPDATE workspace_scan_jobs SET status='running',owner=$owner,lease_until=$until,
+            attempts=attempts+1 WHERE workspace=$s
+            """;
+        command.Parameters.AddWithValue("$owner", owner);
+        command.Parameters.AddWithValue("$until", now + 120);
+        command.Parameters.AddWithValue("$s", job.Workspace);
+        command.ExecuteNonQuery();
+        transaction.Commit();
+        return job;
+    }
+
+    public void FinishScan(ScanJob job, string owner, ScanReport? report, string? error)
+    {
+        using var transaction = connection.BeginTransaction();
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT COUNT(*) FROM workspace_scan_jobs WHERE workspace=$s AND owner=$owner
+            AND status='running' AND lease_until>$now
+            """;
+        command.Parameters.AddWithValue("$s", job.Workspace);
+        command.Parameters.AddWithValue("$owner", owner);
+        command.Parameters.AddWithValue("$now", clock.GetUtcNow().ToUnixTimeSeconds());
+        if (Convert.ToInt32(command.ExecuteScalar()) != 1)
+            throw new InvalidOperationException("Scan lease expired or belongs to another worker.");
+        if (report is not null)
+        {
+            if (report.Workspace.WorkspaceId != job.Workspace || report.Workspace.Root != job.Root)
+                throw new InvalidDataException("Scan result does not match admitted scope.");
+            command.CommandText = """
+                INSERT INTO workspace_snapshots(workspace,worktree,repository,report,scanned)
+                VALUES($s,$worktree,$repository,$body,$scanned)
+                ON CONFLICT(workspace) DO UPDATE SET worktree=$worktree,repository=$repository,
+                report=$body,scanned=$scanned
+                """;
+            command.Parameters.AddWithValue("$worktree", report.Workspace.WorktreeId);
+            command.Parameters.AddWithValue("$repository", report.Workspace.RepositoryId);
+            command.Parameters.AddWithValue("$body", JsonSerializer.Serialize(report, Contract.Json));
+            command.Parameters.AddWithValue("$scanned", report.ScannedAt.ToUnixTimeSeconds());
+            command.ExecuteNonQuery();
+        }
+        command.CommandText = report is not null
+            ? "DELETE FROM workspace_scan_jobs WHERE workspace=$s AND owner=$owner AND requested<=$requested"
+            : """
+              UPDATE workspace_scan_jobs SET status=$status,error=$error,
+              next_retry=$retry,owner=NULL,lease_until=0 WHERE workspace=$s AND owner=$owner
+              """;
+        command.Parameters.AddWithValue("$requested", job.Requested);
+        if (report is null)
+        {
+            command.Parameters.AddWithValue("$status", job.Attempts >= 3 ? "failed" : "pending");
+            command.Parameters.AddWithValue("$error", error is { Length: > 500 } ? error[..500] : error ?? "Scan failed.");
+            command.Parameters.AddWithValue("$retry", clock.GetUtcNow().AddSeconds(30 * job.Attempts).ToUnixTimeSeconds());
+        }
+        command.ExecuteNonQuery();
+        if (report is not null)
+        {
+            command.CommandText = """
+                UPDATE workspace_scan_jobs SET status='pending',owner=NULL,lease_until=0,attempts=0
+                WHERE workspace=$s AND owner=$owner AND requested>$requested
+                """;
+            command.ExecuteNonQuery();
+        }
+        transaction.Commit();
     }
 
     public (string Body, string? Etag, DateTimeOffset Refreshed)? Cached(string source)
@@ -413,6 +701,8 @@ public sealed class NudgeState : IDisposable
         return reader.Read() ? (reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1),
             DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(2))) : null;
     }
+
+    public sealed record ScanJob(string Workspace, string Root, long Requested, int Attempts);
 
     public void Cache(string source, string body, string? etag)
     {

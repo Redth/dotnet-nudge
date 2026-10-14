@@ -29,7 +29,7 @@ jobs:
       - name: Build
         run: dotnet build DotnetNudge.sln --configuration Release
       - name: Test
-        run: dotnet test tests/DotnetNudge.Tests/DotnetNudge.Tests.csproj --configuration Release --no-build
+        run: dotnet test DotnetNudge.sln --configuration Release --no-build
       - name: Publish self-contained
         run: dotnet publish src/DotnetNudge/DotnetNudge.csproj --configuration Release --runtime ${{ matrix.rid }} --self-contained true --output publish
       - name: Smoke

@@ -28,8 +28,10 @@ public static class HookAdapter
         if (eventName == "session-end")
         {
             state.Release(owner);
+            state.Close(path, owner);
             return "{}";
         }
+        state.Register(path, TimeSpan.FromMinutes(15), owner);
         if (eventName == "session-start" || eventName == "prompt-submit")
             state.QueueScan(workspace);
         if (host == "copilot" && eventName == "prompt-submit") return "{}";

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using DotnetNudge;
 using DotnetNudge.Core;
 
 return await Run(args);
@@ -9,6 +10,7 @@ static async Task<int> Run(string[] args)
     {
         Console.WriteLine("""
             dotnet-nudge 1.0
+            mcp [--state-dir PATH]
             scan --workspace PATH [--state-dir PATH] --json
             status --workspace PATH [--state-dir PATH] --json
             decision --workspace PATH --finding ID --revision REV --action snooze|skip-version|disable-category|enable-category [--until TIMESTAMP] [--state-dir PATH] --json
@@ -42,6 +44,7 @@ static async Task<int> Run(string[] args)
         var allowed = args[0] switch
         {
             "scan" or "status" => new[] { "--workspace", "--state-dir", "--json" },
+            "mcp" => ["--state-dir"],
             "decision" => ["--workspace", "--state-dir", "--json", "--finding", "--revision", "--action", "--until"],
             "doctor" => ["--workspace", "--state-dir", "--json"],
             "hook" => ["--host", "--event", "--state-dir"],
@@ -51,9 +54,14 @@ static async Task<int> Run(string[] args)
             throw new ArgumentException($"Unknown option: {options.Keys.Except(allowed).First()}.");
         string Required(string key) => options.TryGetValue(key, out var value) ? value :
             throw new ArgumentException($"Missing required option {key}.");
-        if (!hook && args[0] != "doctor" && !options.ContainsKey("--json"))
+        if (!hook && args[0] is not ("doctor" or "mcp") && !options.ContainsKey("--json"))
             throw new ArgumentException("This command requires --json.");
         var stateDir = options.GetValueOrDefault("--state-dir") ?? NudgeState.DefaultDirectory;
+        if (args[0] == "mcp")
+        {
+            await McpEndpoint.RunAsync(stateDir);
+            return 0;
+        }
         if (args[0] == "doctor")
         {
             var root = options.GetValueOrDefault("--workspace");
@@ -64,35 +72,36 @@ static async Task<int> Run(string[] args)
                 root is null ? null : WorkspaceDiscovery.ScopeId(root),
                 Environment.GetEnvironmentVariable("NUDGE_RELEASES_DIR") is null
                     ? ReleaseMetadata.IndexUrl : "local fixture",
-                "SDK selection, NuGet graphs, MCP worker and trials are not implemented in this foundation."),
+                "MCP worker available while host session is active; package graphs and trials require their modules."),
                 Contract.Json));
             return 0;
         }
         using var state = new NudgeState(stateDir);
+        using var service = new NudgeService(state);
         if (hook)
         {
-            var payload = await Console.In.ReadToEndAsync();
-            if (payload.Length > 1024 * 1024) throw new ArgumentException("Hook payload exceeds 1 MiB.");
+            var buffer = new char[8192];
+            using var text = new StringWriter();
+            int count;
+            while ((count = await Console.In.ReadAsync(buffer.AsMemory())) > 0)
+            {
+                if (text.GetStringBuilder().Length + count > 1024 * 1024)
+                    throw new InvalidDataException("Hook payload exceeds 1 MiB.");
+                text.Write(buffer, 0, count);
+            }
+            var payload = text.ToString();
             Console.WriteLine(HookAdapter.Handle(Required("--host"), Required("--event"), payload, state));
             return 0;
         }
         var workspace = WorkspaceDiscovery.Canonical(Required("--workspace"));
-        var (repository, worktree) = WorkspaceDiscovery.Identities(workspace);
-        var workspaceId = WorkspaceDiscovery.ScopeId(workspace);
         object result;
         switch (args[0])
         {
             case "scan":
-                using (var client = new HttpClient { Timeout = TimeSpan.FromSeconds(12) })
-                {
-                    var source = new ReleaseMetadata(state, client,
-                        fixtureDirectory: Environment.GetEnvironmentVariable("NUDGE_RELEASES_DIR"));
-                    result = await new NudgeScanner(source).ScanAsync(workspace);
-                    state.Save((ScanReport)result);
-                }
+                result = await service.ScanAsync(workspace);
                 break;
             case "status":
-                result = state.Status(repository, worktree, workspaceId);
+                result = service.Status(workspace);
                 break;
             case "decision":
                 if (!Enum.TryParse<DecisionAction>(Required("--action").Replace("-", ""), true, out var action))
@@ -107,7 +116,7 @@ static async Task<int> Run(string[] args)
                         throw new ArgumentException("--until requires an RFC3339 timestamp with a timezone.");
                     until = timestamp;
                 }
-                result = state.Decide(repository, workspaceId, Required("--finding"),
+                result = service.Decide(workspace, Required("--finding"),
                     Required("--revision"), action, until);
                 break;
             default: throw new ArgumentException($"Unknown command {args[0]}.");
@@ -115,13 +124,14 @@ static async Task<int> Run(string[] args)
         Console.WriteLine(JsonSerializer.Serialize(result, Contract.Json));
         return 0;
     }
-    catch (Exception ex) when (ex is ArgumentException or IOException or JsonException or
+    catch (Exception ex) when (ex is ArgumentException or IOException or InvalidDataException or JsonException or
         InvalidOperationException or Microsoft.Data.Sqlite.SqliteException or UnauthorizedAccessException)
     {
-        Console.Error.WriteLine($"dotnet-nudge: {ex.Message}");
+        var message = ex.Message.Length > 500 ? ex.Message[..500] : ex.Message;
+        Console.Error.WriteLine($"dotnet-nudge: {message}");
         if (!hook && args.Contains("--json"))
             Console.WriteLine(JsonSerializer.Serialize(new { schemaVersion = Contract.Version,
-                error = ex.Message }));
+                error = message }));
         else if (hook) Console.WriteLine("{}");
         return hook ? 0 : 2;
     }

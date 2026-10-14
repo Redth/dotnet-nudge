@@ -28,6 +28,8 @@ public sealed class ReleaseMetadata : IReleaseMetadata
         this.fixtureDirectory = fixtureDirectory;
     }
 
+    public DateTimeOffset? LastRetrieved(string source) => state.Cached(source)?.Refreshed;
+
     public async Task<(string Body, Assessment Freshness)> ReadAsync(string source, CancellationToken cancellationToken)
     {
         if (fixtureDirectory is not null)
@@ -42,7 +44,10 @@ public sealed class ReleaseMetadata : IReleaseMetadata
                 var channel = new Uri(source).Segments.Reverse().Skip(1).FirstOrDefault()?.Trim('/');
                 file = Path.Combine(channel ?? "", file);
             }
-            return (await File.ReadAllTextAsync(Path.Combine(fixtureDirectory, file), cancellationToken),
+            var fixture = Path.Combine(fixtureDirectory, file);
+            if (new FileInfo(fixture).Length > 32 * 1024 * 1024)
+                throw new InvalidDataException("Release fixture exceeds 32 MiB.");
+            return (await File.ReadAllTextAsync(fixture, cancellationToken),
                 Assessment.Confirmed);
         }
         if (!Uri.TryCreate(source, UriKind.Absolute, out var uri) ||
@@ -63,6 +68,8 @@ public sealed class ReleaseMetadata : IReleaseMetadata
                 return (cached.Value.Body, Assessment.Confirmed);
             }
             response.EnsureSuccessStatusCode();
+            if (response.Content.Headers.ContentLength is > 32 * 1024 * 1024)
+                throw new InvalidDataException("Release metadata exceeds 32 MiB.");
             await response.Content.LoadIntoBufferAsync(32 * 1024 * 1024, cancellationToken);
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
             state.Cache(source, body, response.Headers.ETag?.ToString());
@@ -116,7 +123,7 @@ public static class SdkServicing
             index = JsonDocument.Parse(result.Body);
             indexFreshness = result.Freshness;
         }
-        catch (Exception ex) when (ex is IOException or JsonException)
+        catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException)
         {
             coverage.Add(new("sdk-servicing", Assessment.Blocked, ex.Message));
             return (findings, coverage);
@@ -217,7 +224,9 @@ public static class SdkServicing
                         new(null, null, declaration.Scope),
                         indexFreshness == Assessment.Stale || result.Freshness == Assessment.Stale
                             ? Assessment.Stale : Assessment.Partial,
-                        [new("dotnet-release-metadata", uri, (clock ?? TimeProvider.System).GetUtcNow())],
+                        [new("dotnet-release-metadata", uri,
+                            (source as ReleaseMetadata)?.LastRetrieved(uri) ??
+                            (clock ?? TimeProvider.System).GetUtcNow())],
                         "review-sdk-pin-and-effective-selection", true, "sdk"));
                     coverage.Add(new("sdk:" + declaration.Scope,
                         indexFreshness == Assessment.Stale || result.Freshness == Assessment.Stale
@@ -228,7 +237,7 @@ public static class SdkServicing
                         $"paths={string.Join(",", declaration.Paths)}." +
                         (malformed ? " Some release entries were malformed." : "")));
                 }
-                catch (Exception ex) when (ex is IOException or JsonException or InvalidOperationException)
+                catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or InvalidOperationException)
                 {
                     coverage.Add(new("sdk:" + declaration.Scope, Assessment.Blocked, ex.Message));
                 }

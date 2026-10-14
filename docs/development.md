@@ -6,6 +6,7 @@ Build with a stable .NET 10 SDK. `global.json` requests at least 10.0.100 and
 ```sh
 dotnet build DotnetNudge.sln
 dotnet test tests/DotnetNudge.Tests/DotnetNudge.Tests.csproj
+dotnet test tests/DotnetNudge.Integration.Tests/DotnetNudge.Integration.Tests.csproj
 dotnet publish src/DotnetNudge/DotnetNudge.csproj -c Release -r osx-arm64 --self-contained true -o publish
 ./publish/dotnet-nudge version
 ```
@@ -100,11 +101,13 @@ injects context for Copilot config hooks. Claude emits
 context events. Session-end releases pending session leases, never blocks
 completion. Context is limited to 4 KiB UTF-8. Hooks use cached state only:
 they do not call the network or MSBuild, and queue durable scan-job records.
-There is **no MCP worker yet**; queued records are visible as partial coverage
-and an explicit `scan` completes them. No host has been end-to-end certified
-by this foundation alone.
+The host-managed `mcp` stdio process runs a bounded worker for active,
+registered scopes. Queued records remain visible as partial coverage if the
+MCP process is lazy/unavailable, and explicit `scan` completes them. See
+`docs/integration.md` for the MCP tool contract. No host has been end-to-end
+certified by the protocol fixture alone.
 
 Not implemented here: package/security feed checks and resolved graph
-inspection, runtime/workload/MAUI servicing, background worker/MCP, automatic
-trials, or host plugin packaging. XML project/config inventory is declared
+inspection, runtime/workload/MAUI servicing, actual trials, or host plugin
+packaging. XML project/config inventory is declared
 data only and does not represent evaluated MSBuild properties.
