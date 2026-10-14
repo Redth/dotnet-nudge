@@ -100,7 +100,7 @@ static async Task<int> Run(string[] args)
                 root is null ? null : WorkspaceDiscovery.ScopeId(root),
                 Environment.GetEnvironmentVariable("NUDGE_RELEASES_DIR") is null
                     ? ReleaseMetadata.IndexUrl : "local fixture",
-                "MCP worker available while host session is active; restored package graphs and read-only probes are supported, trials await integration.",
+                "MCP worker available while host session is active; restored package graphs and read-only probes are supported. Isolated trials require exact-plan approval in an interactive human terminal and trusted project code (not an OS sandbox); execution is unsupported on Windows.",
                 coverage),
                 Contract.Json));
             return 0;

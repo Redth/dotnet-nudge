@@ -169,6 +169,10 @@ public sealed class ProtocolTests
                 await doctor.WaitForExitAsync(timeout.Token);
                 Assert.Equal(0, doctor.ExitCode);
                 using var report = JsonDocument.Parse(await output);
+                var note = report.RootElement.GetProperty("note").GetString()!;
+                Assert.Contains("interactive human terminal", note, StringComparison.Ordinal);
+                Assert.Contains("unsupported on Windows", note, StringComparison.Ordinal);
+                Assert.DoesNotContain("await integration", note, StringComparison.Ordinal);
                 Assert.Contains(report.RootElement.GetProperty("coverage").EnumerateArray(),
                     c => c.GetProperty("check").GetString() == "installed-sdks");
             }
