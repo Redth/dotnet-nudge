@@ -7,5 +7,6 @@
 
   <ItemGroup>
     <PackageReference Include="NuGet.Versioning" Version="6.12.1" />
+    <InternalsVisibleTo Include="DotnetNudge.Toolchains.Tests" />
   </ItemGroup>
 </Project>

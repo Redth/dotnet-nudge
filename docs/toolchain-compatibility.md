@@ -44,9 +44,11 @@ Core project so both projects can be built and tested directly.
   invalid negative age makes the overall result unknown and suppresses its
   value. The library imposes no global freshness duration.
 - `SafeMetadataReader.ReadFile(approvedRoot, relativePath)` reads a bounded file
-  only when the normalized path stays within the approved root and no path
-  component is a symbolic link/reparse point. `ReadArchiveEntry` reads one
-  exact, normalized archive entry in read mode; archive paths are not extracted.
+  only when the normalized path stays within the approved root. Unix reads use
+  no-follow, handle-relative opens for every root/path component; Windows reads
+  verify the opened handle's resolved path before reading. Unsupported
+  platforms fail explicitly. `ReadArchiveEntry` reads one exact, normalized
+  archive entry in read mode; archive paths are not extracted.
 
 All results preserve source timestamps/revisions through `Evidence` and use
 `Assessment` plus diagnostics to distinguish compatible, incompatible,

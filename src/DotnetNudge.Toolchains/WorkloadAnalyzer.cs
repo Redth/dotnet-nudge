@@ -555,6 +555,11 @@ public static class HostCompatibilityAnalyzer
             var macOsVersion = request.Inventory?.MacOsVersion;
             if (request.MacOsRequirementsByWorkload?.TryGetValue(workloadId, out var macOsRequirement) == true)
             {
+                if (macOsRequirement.Evidence is not null)
+                {
+                    evidence.Add(macOsRequirement.Evidence);
+                }
+
                 checks.Add(CheckVersion(workloadId, "macOS", macOsRequirement.Range, macOsVersion));
             }
             else

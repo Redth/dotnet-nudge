@@ -399,6 +399,32 @@ public sealed class ToolchainCompatibilityTests
     }
 
     [Fact]
+    public void Stale_mac_os_requirement_evidence_downgrades_host_analysis()
+    {
+        var oldRequirementEvidence = EvidenceFor("macos-requirement.json") with
+        {
+            RetrievedAt = RetrievedAt.AddDays(-2)
+        };
+        var request = new HostCompatibilityRequest(
+            AnalyzeIosAndAndroid(),
+            Inventory(),
+            [],
+            new(null, null, new Dictionary<string, string>()),
+            Freshness,
+            new Dictionary<string, VersionRequirement>
+            {
+                ["microsoft.net.sdk.ios"] = new("[15.0,16.0)", null, oldRequirementEvidence)
+            });
+
+        var result = HostCompatibilityAnalyzer.Analyze(request);
+
+        Assert.Equal(Assessment.Unknown, result.Assessment);
+        Assert.Null(result.Value);
+        Assert.Contains(result.Evidence, x => x.Source == "fixture:macos-requirement.json");
+        Assert.Contains(result.Diagnostics, x => x.Code == "evidence.expired");
+    }
+
+    [Fact]
     public void Identifies_component_security_servicing_and_deployment_specific_actions()
     {
         var request = RuntimeRequest(RuntimeDeploymentKind.FrameworkDependent);
@@ -562,6 +588,10 @@ public sealed class ToolchainCompatibilityTests
         Assert.Throws<ArgumentException>(() => SafeMetadataReader.ReadArchiveEntry(
             stream,
             "../data/WorkloadDependencies.json"));
+        Assert.Throws<InvalidDataException>(() => SafeMetadataReader.ReadArchiveEntry(
+            stream,
+            "data/microsoft.net.workloads.workloadset.json",
+            maximumBytes: 4));
     }
 
     [Fact]
@@ -576,6 +606,7 @@ public sealed class ToolchainCompatibilityTests
 
         Assert.Contains("\"workloadVersion\": \"10.0.102\"", json);
         Assert.Equal(before, SHA256.HashData(File.ReadAllBytes(path)));
+        Assert.Throws<InvalidDataException>(() => SafeMetadataReader.ReadFile(root, relativePath, maximumBytes: 4));
     }
 
     [Fact]
@@ -599,6 +630,33 @@ public sealed class ToolchainCompatibilityTests
             Assert.Throws<ArgumentException>(() => SafeMetadataReader.ReadFile(root, Path.Combine(outside, "secret.json")));
             Assert.Throws<UnauthorizedAccessException>(() => SafeMetadataReader.ReadFile(root, "linked.json"));
             Assert.Throws<UnauthorizedAccessException>(() => SafeMetadataReader.ReadFile(root, "linked-dir/secret.json"));
+
+            var swapTarget = Path.Combine(root, "swap.json");
+            var savedPath = Path.Combine(root, "swap-original.json");
+            File.WriteAllText(swapTarget, "{}");
+            Assert.Throws<UnauthorizedAccessException>(() => SafeMetadataReader.ReadFileCore(
+                root,
+                "swap.json",
+                SafeMetadataReader.DefaultMaximumBytes,
+                () =>
+                {
+                    File.Move(swapTarget, savedPath);
+                    File.CreateSymbolicLink(swapTarget, Path.Combine(outside, "secret.json"));
+                }));
+
+            var swapDirectory = Path.Combine(root, "swap-dir");
+            var savedDirectory = Path.Combine(root, "swap-dir-original");
+            Directory.CreateDirectory(swapDirectory);
+            File.WriteAllText(Path.Combine(swapDirectory, "data.json"), "{}");
+            Assert.Throws<UnauthorizedAccessException>(() => SafeMetadataReader.ReadFileCore(
+                root,
+                "swap-dir/data.json",
+                SafeMetadataReader.DefaultMaximumBytes,
+                () =>
+                {
+                    Directory.Move(swapDirectory, savedDirectory);
+                    Directory.CreateSymbolicLink(swapDirectory, outside);
+                }));
         }
         finally
         {

@@ -1,6 +1,9 @@
+using System.ComponentModel;
 using System.IO.Compression;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Win32.SafeHandles;
 
 namespace DotnetNudge.Toolchains;
 
@@ -198,7 +201,19 @@ public static class SafeMetadataReader
     public const int DefaultMaximumBytes = 10 * 1024 * 1024;
 
     public static string ReadFile(string approvedRoot, string relativePath, int maximumBytes = DefaultMaximumBytes)
+        => ReadFileCore(approvedRoot, relativePath, maximumBytes, null);
+
+    internal static string ReadFileCore(
+        string approvedRoot,
+        string relativePath,
+        int maximumBytes,
+        Action? afterPathValidation)
     {
+        if (maximumBytes < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumBytes));
+        }
+
         if (string.IsNullOrWhiteSpace(approvedRoot) || string.IsNullOrWhiteSpace(relativePath)
             || Path.IsPathRooted(relativePath))
         {
@@ -215,63 +230,187 @@ public static class SafeMetadataReader
             throw new UnauthorizedAccessException("Metadata path must remain beneath the approved root.");
         }
 
-        RejectLinkedPath(root);
-        var current = root;
-        foreach (var component in relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
-        {
-            if (component.Length == 0)
-            {
-                throw new UnauthorizedAccessException("Metadata path contains an invalid component.");
-            }
-
-            current = Path.Combine(current, component);
-            RejectLink(current);
-        }
-
-        var path = current;
-        var info = new FileInfo(path);
-        if (!info.Exists)
-        {
-            throw new FileNotFoundException("Metadata file was not found.", path);
-        }
-
-        if (info.Length > maximumBytes)
-        {
-            throw new InvalidDataException($"Metadata file exceeds the {maximumBytes}-byte limit.");
-        }
-
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        afterPathValidation?.Invoke();
+        using var stream = OpenMetadataStream(root, relative, target);
         return ReadBounded(stream, maximumBytes);
     }
 
-    private static void RejectLinkedPath(string path)
+    private static FileStream OpenMetadataStream(string approvedRoot, string relativePath, string path)
     {
-        var fullPath = Path.GetFullPath(path);
-        var root = Path.GetPathRoot(fullPath)!;
-        var current = root;
-        foreach (var component in fullPath[root.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
         {
-            current = Path.Combine(current, component);
-            RejectLink(current);
+            return OpenUnixMetadataStream(approvedRoot, relativePath);
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("Safe metadata file opening is unavailable on this platform.");
+        }
+
+        var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        try
+        {
+            var resolvedPath = ResolveWindowsHandlePath(stream.SafeFileHandle);
+            var relative = Path.GetRelativePath(Path.GetFullPath(approvedRoot), Path.GetFullPath(resolvedPath));
+            if (relative == "." || relative == ".."
+                || relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase)
+                || Path.IsPathRooted(relative))
+            {
+                throw new UnauthorizedAccessException("Opened metadata file handle resolved outside the approved root.");
+            }
+
+            return stream;
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
         }
     }
 
-    private static void RejectLink(string path)
+    private static FileStream OpenUnixMetadataStream(string approvedRoot, string relativePath)
     {
-        FileSystemInfo info = Directory.Exists(path) ? new DirectoryInfo(path) : new FileInfo(path);
-        if (!info.Exists)
+        var isMacOs = OperatingSystem.IsMacOS();
+        var atCurrentWorkingDirectory = isMacOs ? -2 : -100;
+        var noFollow = isMacOs ? 0x00000100 : 0x00020000;
+        var directory = isMacOs ? 0x00100000 : 0x00010000;
+        var closeOnExec = isMacOs ? 0x01000000 : 0x00080000;
+        var rootDescriptor = OpenAt(
+            atCurrentWorkingDirectory,
+            Path.GetPathRoot(approvedRoot)!,
+            directory | noFollow | closeOnExec);
+        if (rootDescriptor < 0)
         {
-            return;
+            throw UnixOpenException("Unable to open the approved metadata root.");
         }
 
-        if ((info.Attributes & FileAttributes.ReparsePoint) != 0 || info.LinkTarget is not null)
+        using var rootHandle = new SafeFileHandle((IntPtr)rootDescriptor, ownsHandle: true);
+        SafeFileHandle? currentDirectory = null;
+        var currentHandle = rootHandle;
+        try
         {
-            throw new UnauthorizedAccessException($"Metadata path contains a symbolic link or reparse point: '{path}'.");
+            var rootComponents = Path.GetFullPath(approvedRoot)
+                .Trim(Path.DirectorySeparatorChar)
+                .Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var component in rootComponents)
+            {
+                var descriptor = OpenAt(currentHandle.DangerousGetHandle().ToInt32(), component, directory | noFollow | closeOnExec);
+                if (descriptor < 0)
+                {
+                    throw UnixOpenException("Unable to traverse the approved metadata root without following links.");
+                }
+
+                currentDirectory?.Dispose();
+                currentDirectory = new SafeFileHandle((IntPtr)descriptor, ownsHandle: true);
+                currentHandle = currentDirectory;
+            }
+
+            var components = relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            for (var i = 0; i < components.Length - 1; i++)
+            {
+                var descriptor = OpenAt(currentHandle.DangerousGetHandle().ToInt32(), components[i], directory | noFollow | closeOnExec);
+                if (descriptor < 0)
+                {
+                    throw UnixOpenException("Unable to traverse the metadata path without following links.");
+                }
+
+                currentDirectory?.Dispose();
+                currentDirectory = new SafeFileHandle((IntPtr)descriptor, ownsHandle: true);
+                currentHandle = currentDirectory;
+            }
+
+            var fileDescriptor = OpenAt(
+                currentHandle.DangerousGetHandle().ToInt32(),
+                components[^1],
+                noFollow | closeOnExec);
+            if (fileDescriptor < 0)
+            {
+                throw UnixOpenException("Unable to open the metadata file without following links.");
+            }
+
+            var fileHandle = new SafeFileHandle((IntPtr)fileDescriptor, ownsHandle: true);
+            try
+            {
+                return new FileStream(fileHandle, FileAccess.Read);
+            }
+            catch
+            {
+                fileHandle.Dispose();
+                throw;
+            }
+        }
+        finally
+        {
+            currentDirectory?.Dispose();
         }
     }
+
+    private static Exception UnixOpenException(string message)
+    {
+        var error = Marshal.GetLastWin32Error();
+        if (error == 2)
+        {
+            return new FileNotFoundException(message);
+        }
+
+        if (error is 20 or 40 or 62)
+        {
+            return new UnauthorizedAccessException($"{message} Symbolic links and non-directory path components are not allowed.");
+        }
+
+        return new Win32Exception(error, message);
+    }
+
+    private static string ResolveWindowsHandlePath(SafeFileHandle handle)
+    {
+        var buffer = new StringBuilder(1024);
+        var length = GetFinalPathNameByHandle(handle, buffer, (uint)buffer.Capacity, 0);
+        if (length == 0)
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to verify opened metadata file path.");
+        }
+
+        if (length >= buffer.Capacity)
+        {
+            if (length > 32768)
+            {
+                throw new IOException("Opened metadata file path exceeds the supported verification length.");
+            }
+
+            buffer = new StringBuilder(checked((int)length + 1));
+            length = GetFinalPathNameByHandle(handle, buffer, (uint)buffer.Capacity, 0);
+            if (length == 0 || length >= buffer.Capacity)
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to verify opened metadata file path.");
+            }
+        }
+
+        var path = buffer.ToString();
+        if (path.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+        {
+            return @"\\" + path[8..];
+        }
+
+        return path.StartsWith(@"\\?\", StringComparison.Ordinal) ? path[4..] : path;
+    }
+
+    [DllImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", CharSet = CharSet.Unicode, SetLastError = true, CallingConvention = CallingConvention.Winapi)]
+    private static extern uint GetFinalPathNameByHandle(
+        SafeFileHandle file,
+        StringBuilder path,
+        uint pathLength,
+        uint flags);
+
+    [DllImport("libc", EntryPoint = "openat", SetLastError = true, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int OpenAt(int directory, string path, int flags);
 
     public static string ReadArchiveEntry(Stream archiveStream, string exactEntryName, int maximumBytes = DefaultMaximumBytes)
     {
+        if (maximumBytes < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumBytes));
+        }
+
         if (string.IsNullOrWhiteSpace(exactEntryName)
             || Path.IsPathRooted(exactEntryName)
             || exactEntryName.Contains('\\')
