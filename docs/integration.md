@@ -32,6 +32,8 @@ workspace. The following tools currently expose versioned JSON as text:
 | `nudge_trial()` | Returns blocked coverage until the reviewed trial module is integrated; no trial is run. |
 
 `status`, `scan`, `package-context`, and `decision` CLI commands use the same service/state layer.
+`doctor --workspace PATH --json` reports cached scope coverage without scanning
+and does not infer success from an absent worker or report.
 `hook` registers its host-provided workspace and queues a scan on session
 start/prompt submission; session end closes the active registration and
 releases delivery leases. Hooks remain cached-only and never perform scans.

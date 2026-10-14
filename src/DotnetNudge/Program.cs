@@ -67,14 +67,20 @@ static async Task<int> Run(string[] args)
         if (args[0] == "doctor")
         {
             var root = options.GetValueOrDefault("--workspace");
+            if (root is not null && !Directory.Exists(root))
+                throw new DirectoryNotFoundException(root);
             var identity = root is null ? ((string Repository, string Worktree)?)null
                 : WorkspaceDiscovery.Identities(root);
+            using var doctorState = new NudgeState(stateDir);
+            var coverage = root is null ? null : doctorState.Status(identity!.Value.Repository,
+                identity.Value.Worktree, WorkspaceDiscovery.ScopeId(root)).Coverage;
             Console.WriteLine(JsonSerializer.Serialize(new DoctorReport(Contract.Version,
                 Path.GetFullPath(stateDir), root, identity?.Repository, identity?.Worktree,
                 root is null ? null : WorkspaceDiscovery.ScopeId(root),
                 Environment.GetEnvironmentVariable("NUDGE_RELEASES_DIR") is null
                     ? ReleaseMetadata.IndexUrl : "local fixture",
-                "MCP worker available while host session is active; restored package graphs and read-only probes are supported, trials await integration."),
+                "MCP worker available while host session is active; restored package graphs and read-only probes are supported, trials await integration.",
+                coverage),
                 Contract.Json));
             return 0;
         }

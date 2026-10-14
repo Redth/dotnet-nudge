@@ -98,6 +98,23 @@ public sealed class ProtocolTests
             using (var status = await Call("nudge_status", new() { ["workspace"] = workspace }))
                 Assert.Equal("version-skipped", status.RootElement.GetProperty("findings")[0]
                     .GetProperty("suppression").GetString());
+            var doctorStart = new ProcessStartInfo(engine ?? "dotnet")
+            {
+                RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false
+            };
+            if (engine is null) doctorStart.ArgumentList.Add(assembly);
+            foreach (var argument in new[] { "doctor", "--workspace", workspace,
+                "--state-dir", stateDir, "--json" })
+                doctorStart.ArgumentList.Add(argument);
+            using (var doctor = Process.Start(doctorStart)!)
+            {
+                var output = doctor.StandardOutput.ReadToEndAsync();
+                await doctor.WaitForExitAsync(timeout.Token);
+                Assert.Equal(0, doctor.ExitCode);
+                using var report = JsonDocument.Parse(await output);
+                Assert.Contains(report.RootElement.GetProperty("coverage").EnumerateArray(),
+                    c => c.GetProperty("check").GetString() == "installed-sdks");
+            }
             var outside = Path.Combine(root, "other");
             Directory.CreateDirectory(outside);
             var denied = await client.CallToolAsync("nudge_scan", new Dictionary<string, object?>

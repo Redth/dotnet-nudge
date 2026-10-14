@@ -44,4 +44,4 @@ public sealed record DecisionResult(int SchemaVersion, string FindingId, string 
     DecisionAction Action, DateTimeOffset RecordedAt, DateTimeOffset? Until);
 public sealed record DoctorReport(int SchemaVersion, string StateDirectory, string? Workspace,
     string? RepositoryId, string? WorktreeId, string? WorkspaceId, string ReleaseMetadataSource,
-    string Note);
+    string Note, IReadOnlyList<Coverage>? Coverage = null);
