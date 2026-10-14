@@ -1,0 +1,22 @@
+name: Isolated trials
+on:
+  pull_request:
+    paths:
+      - 'src/DotnetNudge.Trials/**'
+      - 'tests/DotnetNudge.Trials.Tests/**'
+      - '.github/workflows/trials-ci.yml'
+  workflow_dispatch:
+jobs:
+  trials:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.401'
+      - name: Build trial projects
+        run: dotnet build tests/DotnetNudge.Trials.Tests/DotnetNudge.Trials.Tests.csproj -c Release
+      - name: Run isolated trial tests
+        env:
+          NUDGE_TEST_ROOT: ${{ runner.temp }}/nudge-trials
+        run: dotnet run --project tests/DotnetNudge.Trials.Tests/DotnetNudge.Trials.Tests.csproj -c Release --no-build
