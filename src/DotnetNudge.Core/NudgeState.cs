@@ -20,20 +20,23 @@ public sealed class NudgeState : IDisposable
         connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = Path.Combine(directory, "state.sqlite"),
-            Mode = SqliteOpenMode.ReadWriteCreate
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Pooling = false
         }.ToString());
-        connection.Open();
-        using var command = connection.CreateCommand();
-        command.CommandText = """
+        try
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
             INSERT INTO schema_version SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM schema_version);
             """;
-        command.ExecuteNonQuery();
-        command.CommandText = "SELECT version FROM schema_version";
-        if (Convert.ToInt32(command.ExecuteScalar()) != Contract.Version)
-            throw new InvalidDataException("Unsupported dotnet-nudge state schema; preserve the database and use a compatible version.");
-        command.CommandText = """
+            command.ExecuteNonQuery();
+            command.CommandText = "SELECT version FROM schema_version";
+            if (Convert.ToInt32(command.ExecuteScalar()) != Contract.Version)
+                throw new InvalidDataException("Unsupported dotnet-nudge state schema; preserve the database and use a compatible version.");
+            command.CommandText = """
             CREATE TABLE IF NOT EXISTS snapshots (
               worktree TEXT PRIMARY KEY, repository TEXT NOT NULL, report TEXT NOT NULL, scanned INTEGER NOT NULL
             );
@@ -55,7 +58,13 @@ public sealed class NudgeState : IDisposable
               worktree TEXT PRIMARY KEY, requested INTEGER NOT NULL, status TEXT NOT NULL
             );
             """;
-        command.ExecuteNonQuery();
+            command.ExecuteNonQuery();
+        }
+        catch
+        {
+            connection.Dispose();
+            throw;
+        }
     }
 
     public void Save(ScanReport report)

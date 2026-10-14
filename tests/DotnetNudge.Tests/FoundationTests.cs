@@ -222,7 +222,12 @@ public sealed class FoundationTests
         using var fixture = new Fixture();
         using (fixture.State()) { }
         var database = Path.Combine(fixture.Root, "state", "state.sqlite");
-        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={database}"))
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection(
+            new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+            {
+                DataSource = database,
+                Pooling = false
+            }.ToString()))
         {
             connection.Open();
             using var command = connection.CreateCommand();
