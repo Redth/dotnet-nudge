@@ -43,25 +43,35 @@ $defaultEngineRoot = if ($env:LOCALAPPDATA) {
 function Get-InstalledEngine([string] $DataRoot) {
     $engineRoot = Join-Path $DataRoot "engine"
     $pointerPath = Join-Path $engineRoot "current"
-    if (-not (Test-Path -LiteralPath $pointerPath -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath $engineRoot -PathType Container) -or
+        (Test-ReparsePoint $engineRoot) -or
+        -not (Test-Path -LiteralPath $pointerPath -PathType Leaf) -or
+        (Test-ReparsePoint $pointerPath)) {
         return $null
     }
 
     $relative = (Get-Content -LiteralPath $pointerPath -TotalCount 1).Trim()
-    if ($relative -notmatch '^[0-9][0-9A-Za-z.+-]*/(linux|osx|win)-(x64|arm64)$') {
+    if ($relative -notmatch '^(?<version>[0-9][0-9A-Za-z.+-]*)/(?<rid>(linux|osx|win)-(x64|arm64))$') {
         return $null
     }
 
-    $candidate = Join-Path (Join-Path $engineRoot $relative) "dotnet-nudge.exe"
-    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+    $versionDirectory = Join-Path $engineRoot $Matches.version
+    $ridDirectory = Join-Path $versionDirectory $Matches.rid
+    $candidate = Join-Path $ridDirectory "dotnet-nudge.exe"
+    if (-not (Test-Path -LiteralPath $versionDirectory -PathType Container) -or
+        (Test-ReparsePoint $versionDirectory) -or
+        -not (Test-Path -LiteralPath $ridDirectory -PathType Container) -or
+        (Test-ReparsePoint $ridDirectory) -or
+        -not (Test-Path -LiteralPath $candidate -PathType Leaf) -or
+        (Test-ReparsePoint $candidate)) {
         return $null
     }
 
-    $resolvedRoot = [System.IO.Path]::GetFullPath($engineRoot).TrimEnd(
+    $resolvedRoot = (Resolve-Path -LiteralPath $engineRoot).ProviderPath.TrimEnd(
         [System.IO.Path]::DirectorySeparatorChar,
         [System.IO.Path]::AltDirectorySeparatorChar
     )
-    $resolvedCandidate = [System.IO.Path]::GetFullPath($candidate)
+    $resolvedCandidate = (Resolve-Path -LiteralPath $candidate).ProviderPath
     if (-not $resolvedCandidate.StartsWith(
         $resolvedRoot + [System.IO.Path]::DirectorySeparatorChar,
         [System.StringComparison]::OrdinalIgnoreCase
@@ -69,6 +79,24 @@ function Get-InstalledEngine([string] $DataRoot) {
         return $null
     }
     return $resolvedCandidate
+}
+
+function Test-ReparsePoint([string] $Path) {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    return $null -ne $item -and
+        (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+}
+
+function Test-ExistingSetupMarker([string] $Path) {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    return $item -is [System.IO.FileInfo] -and
+        (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0)
+}
+
+function Write-SetupStateError([string] $Reason) {
+    [Console]::Error.WriteLine(
+        "dotnet-nudge: unable to persist the one-time setup notice in '$dataRoot': $Reason. Set NUDGE_STATE_DIR to writable storage."
+    )
 }
 
 $enginePath = $null
@@ -92,6 +120,7 @@ if ($env:NUDGE_ENGINE_PATH) {
 }
 
 if ($enginePath -and (Test-Path -LiteralPath $enginePath -PathType Leaf)) {
+    $env:NUDGE_STATE_DIR = $dataRoot
     & $enginePath hook --host $HostName --event $EventName
     exit $LASTEXITCODE
 }
@@ -111,7 +140,31 @@ if (-not $diagnostic) {
 
 try {
     [System.IO.Directory]::CreateDirectory($dataRoot) | Out-Null
-    $markerPath = Join-Path $dataRoot ".setup-required-notice-shown"
+} catch [System.IO.IOException] {
+    Write-SetupStateError $_.Exception.Message
+    exit 0
+} catch [System.UnauthorizedAccessException] {
+    Write-SetupStateError $_.Exception.Message
+    exit 0
+} catch [System.ArgumentException] {
+    Write-SetupStateError $_.Exception.Message
+    exit 0
+} catch [System.NotSupportedException] {
+    Write-SetupStateError $_.Exception.Message
+    exit 0
+}
+
+$markerPath = Join-Path $dataRoot ".setup-required-notice-shown"
+$markerItem = Get-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
+if ($null -ne $markerItem) {
+    if (Test-ExistingSetupMarker $markerPath) {
+        exit 0
+    }
+    Write-SetupStateError "the setup marker path is not a regular file"
+    exit 0
+}
+
+try {
     $stream = [System.IO.File]::Open(
         $markerPath,
         [System.IO.FileMode]::CreateNew,
@@ -121,8 +174,19 @@ try {
     $stream.Dispose()
     [Console]::Out.WriteLine($diagnostic)
 } catch [System.IO.IOException] {
+    if (Test-ExistingSetupMarker $markerPath) {
+        exit 0
+    }
+    Write-SetupStateError $_.Exception.Message
     exit 0
 } catch [System.UnauthorizedAccessException] {
+    Write-SetupStateError $_.Exception.Message
+    exit 0
+} catch [System.ArgumentException] {
+    Write-SetupStateError $_.Exception.Message
+    exit 0
+} catch [System.NotSupportedException] {
+    Write-SetupStateError $_.Exception.Message
     exit 0
 }
 

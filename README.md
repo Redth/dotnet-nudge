@@ -43,7 +43,8 @@ dotnet run --project src/DotnetNudge/DotnetNudge.csproj -- status --workspace "$
   Copilot CLI on Windows.
 - Hooks preserve the engine's stdout, stderr, stdin, and exit status. A missing
   engine produces one short setup message at most once in the writable state
-  directory, without writing to the installed plugin cache.
+  directory, without writing to the installed plugin cache. An unusable state
+  directory produces an explicit stderr error instead of a chat message.
 
 See [plugin development](docs/plugin-development.md) for isolated validation,
 hook details, setup constraints, and compatibility limitations, and the

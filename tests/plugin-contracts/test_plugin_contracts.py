@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import platform
@@ -13,10 +14,19 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path, PurePosixPath
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
 PLUGIN = ROOT / "plugins" / "dotnet-nudge"
+SETUP_SPEC = importlib.util.spec_from_file_location(
+    "dotnet_nudge_setup_runtime",
+    PLUGIN / "scripts" / "setup-runtime.py",
+)
+if SETUP_SPEC is None or SETUP_SPEC.loader is None:
+    raise RuntimeError("Could not load the runtime setup helper for contract tests.")
+SETUP_RUNTIME = importlib.util.module_from_spec(SETUP_SPEC)
+SETUP_SPEC.loader.exec_module(SETUP_RUNTIME)
 HOOK_EVENTS = {
     "sessionStart": "session-start",
     "userPromptSubmitted": "prompt-submit",
@@ -228,6 +238,7 @@ class LauncherTests(unittest.TestCase):
         self.state = self.temp_root / "state directory with spaces"
         self.capture = self.temp_root / "captured stdin.json"
         self.args_capture = self.temp_root / "captured args.json"
+        self.state_capture = self.temp_root / "captured state directory.txt"
         self.fixture = self.cwd / "hook"
         self.fixture.write_text(
             "#!/usr/bin/env python3\n"
@@ -237,6 +248,8 @@ class LauncherTests(unittest.TestCase):
             "    stream.write(payload)\n"
             "with open(os.environ['FIXTURE_ARGS'], 'w', encoding='utf-8') as stream:\n"
             "    json.dump([os.path.basename(sys.argv[0]), *sys.argv[1:]], stream)\n"
+            "with open(os.environ['FIXTURE_STATE_CAPTURE'], 'w', encoding='utf-8') as stream:\n"
+            "    stream.write(os.environ.get('NUDGE_STATE_DIR', ''))\n"
             "sys.stdout.buffer.write(os.environ['FIXTURE_STDOUT'].encode('utf-8'))\n"
             "sys.stderr.buffer.write(os.environ['FIXTURE_STDERR'].encode('utf-8'))\n"
             "raise SystemExit(int(os.environ['FIXTURE_EXIT']))\n",
@@ -255,6 +268,9 @@ class LauncherTests(unittest.TestCase):
                 "NUDGE_STATE_DIR": str(self.state),
                 "FIXTURE_CAPTURE": str(self.capture),
                 "FIXTURE_ARGS": str(self.args_capture),
+                "FIXTURE_STATE_CAPTURE": str(self.state_capture),
+                "FIXTURE_PYTHON": sys.executable,
+                "FIXTURE_SCRIPT": str(self.fixture),
                 "FIXTURE_STDOUT": self.stdout,
                 "FIXTURE_STDERR": self.stderr,
                 "FIXTURE_EXIT": "23",
@@ -305,11 +321,18 @@ class LauncherTests(unittest.TestCase):
             check=False,
         )
 
-    def assert_fixture_passthrough(self, result: subprocess.CompletedProcess, host: str, event: str) -> None:
+    def assert_fixture_passthrough(
+        self,
+        result: subprocess.CompletedProcess,
+        host: str,
+        event: str,
+        state_dir: Path | None = None,
+    ) -> None:
         self.assertEqual(result.returncode, 23, result.stderr.decode(errors="replace"))
         self.assertEqual(result.stdout, self.stdout.encode())
         self.assertEqual(result.stderr, self.stderr.encode())
         self.assertEqual(self.capture.read_bytes(), self.input)
+        self.assertEqual(self.state_capture.read_text(encoding="utf-8"), str(state_dir or self.state))
         self.assertEqual(
             json.loads(self.args_capture.read_text(encoding="utf-8")),
             ["hook", "--host", host, "--event", event],
@@ -326,6 +349,45 @@ class LauncherTests(unittest.TestCase):
     def test_powershell_launcher_preserves_arguments_stdin_stdout_stderr_and_exit_status(self) -> None:
         result = self.run_powershell("claude", "prompt-submit", self.base_env())
         self.assert_fixture_passthrough(result, "claude", "prompt-submit")
+
+    def test_plugin_data_directory_is_passed_to_the_engine(self) -> None:
+        launchers = (
+            (self.run_bash, "copilot", "COPILOT_PLUGIN_DATA"),
+            (self.run_bash, "claude", "CLAUDE_PLUGIN_DATA"),
+            (self.run_powershell, "copilot", "COPILOT_PLUGIN_DATA"),
+            (self.run_powershell, "claude", "CLAUDE_PLUGIN_DATA"),
+        )
+        for launcher, host, data_variable in launchers:
+            with self.subTest(launcher=launcher.__name__, host=host, data_variable=data_variable):
+                selected_data = self.temp_root / f"{data_variable.lower()} state"
+                env = self.base_env()
+                env.pop("NUDGE_STATE_DIR")
+                env[data_variable] = str(selected_data)
+                result = launcher(host, "session-start", env)
+                self.assert_fixture_passthrough(
+                    result,
+                    host,
+                    "session-start",
+                    selected_data,
+                )
+
+    def test_explicit_state_directory_overrides_plugin_data_for_the_engine(self) -> None:
+        for launcher, host in (
+            (self.run_bash, "copilot"),
+            (self.run_powershell, "claude"),
+        ):
+            with self.subTest(launcher=launcher.__name__, host=host):
+                selected_data = self.temp_root / "explicit override state"
+                env = self.base_env()
+                env["NUDGE_STATE_DIR"] = str(selected_data)
+                env["COPILOT_PLUGIN_DATA"] = str(self.temp_root / "different plugin state")
+                result = launcher(host, "session-start", env)
+                self.assert_fixture_passthrough(
+                    result,
+                    host,
+                    "session-start",
+                    selected_data,
+                )
 
     def test_missing_engine_emits_one_host_correct_notice_and_uses_data_state(self) -> None:
         for launcher, host, event, expected in (
@@ -367,6 +429,22 @@ class LauncherTests(unittest.TestCase):
                     "Setup state must not be written into the plugin cache.",
                 )
 
+    def test_invalid_state_directory_reports_error_without_hook_stdout(self) -> None:
+        for launcher, host in (
+            (self.run_bash, "copilot"),
+            (self.run_powershell, "claude"),
+        ):
+            with self.subTest(launcher=launcher.__name__, host=host):
+                invalid_state = self.temp_root / "state path is a file"
+                invalid_state.write_text("not a directory", encoding="utf-8")
+                env = self.base_env()
+                env.pop("NUDGE_ENGINE_PATH")
+                env["NUDGE_STATE_DIR"] = str(invalid_state)
+                result = launcher(host, "session-start", env)
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, b"")
+                self.assertIn(b"unable to persist the one-time setup notice", result.stderr)
+
     @unittest.skipIf(os.name == "nt", "Bash is not the native Windows launcher")
     def test_bash_resolves_a_versioned_engine_from_user_data(self) -> None:
         versioned_engine_dir = self.state / "engine" / "1.2.3" / expected_rid()
@@ -375,11 +453,57 @@ class LauncherTests(unittest.TestCase):
             f"1.2.3/{expected_rid()}\n",
             encoding="utf-8",
         )
-        (versioned_engine_dir / "dotnet-nudge").symlink_to(sys.executable)
+        engine = versioned_engine_dir / "dotnet-nudge"
+        engine.write_text(
+            '#!/bin/sh\n[ "$1" = hook ] || exit 88\nshift\n'
+            'exec "$FIXTURE_PYTHON" "$FIXTURE_SCRIPT" "$@"\n',
+            encoding="utf-8",
+        )
+        engine.chmod(0o755)
         env = self.base_env()
         env.pop("NUDGE_ENGINE_PATH")
         result = self.run_bash("copilot", "session-start", env)
         self.assert_fixture_passthrough(result, "copilot", "session-start")
+
+    @unittest.skipIf(os.name == "nt", "Bash is not the native Windows launcher")
+    def test_bash_rejects_installed_engine_leaf_symlink(self) -> None:
+        versioned_engine_dir = self.state / "engine" / "1.2.3" / expected_rid()
+        versioned_engine_dir.mkdir(parents=True)
+        (self.state / "engine" / "current").write_text(
+            f"1.2.3/{expected_rid()}\n",
+            encoding="utf-8",
+        )
+        (versioned_engine_dir / "dotnet-nudge").symlink_to(self.fixture)
+        env = self.base_env()
+        env.pop("NUDGE_ENGINE_PATH")
+        result = self.run_bash("copilot", "session-start", env)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout), {"additionalContext": SETUP_DIAGNOSTIC})
+        self.assertEqual(result.stderr, b"")
+        self.assertFalse(self.capture.exists(), "A symlinked engine must not be executed.")
+
+    @unittest.skipIf(os.name == "nt", "Bash is not the native Windows launcher")
+    def test_bash_rejects_installed_engine_directory_symlink(self) -> None:
+        engine_root = self.state / "engine"
+        engine_root.mkdir(parents=True)
+        external_version = self.temp_root / "external version"
+        external_engine_dir = external_version / expected_rid()
+        external_engine_dir.mkdir(parents=True)
+        external_engine = external_engine_dir / "dotnet-nudge"
+        shutil.copy2(self.fixture, external_engine)
+        external_engine.chmod(0o755)
+        (engine_root / "1.2.3").symlink_to(external_version, target_is_directory=True)
+        (engine_root / "current").write_text(
+            f"1.2.3/{expected_rid()}\n",
+            encoding="utf-8",
+        )
+        env = self.base_env()
+        env.pop("NUDGE_ENGINE_PATH")
+        result = self.run_bash("copilot", "session-start", env)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout), {"additionalContext": SETUP_DIAGNOSTIC})
+        self.assertEqual(result.stderr, b"")
+        self.assertFalse(self.capture.exists(), "An engine behind a directory symlink must not run.")
 
     @unittest.skipUnless(os.name == "nt", "PowerShell is the native Windows launcher")
     def test_powershell_resolves_a_versioned_engine_from_user_data(self) -> None:
@@ -394,6 +518,75 @@ class LauncherTests(unittest.TestCase):
         env.pop("NUDGE_ENGINE_PATH")
         result = self.run_powershell("copilot", "session-start", env)
         self.assert_fixture_passthrough(result, "copilot", "session-start")
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell reparse-point checks require Windows")
+    def test_powershell_rejects_installed_engine_leaf_symlink(self) -> None:
+        versioned_engine_dir = self.state / "engine" / "1.2.3" / expected_rid()
+        versioned_engine_dir.mkdir(parents=True)
+        (self.state / "engine" / "current").write_text(
+            f"1.2.3/{expected_rid()}\n",
+            encoding="utf-8",
+        )
+        try:
+            (versioned_engine_dir / "dotnet-nudge.exe").symlink_to(sys.executable)
+        except OSError as error:
+            self.skipTest(f"Windows symlink privilege is unavailable: {error}")
+        env = self.base_env()
+        env.pop("NUDGE_ENGINE_PATH")
+        result = self.run_powershell("copilot", "session-start", env)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout), {"additionalContext": SETUP_DIAGNOSTIC})
+        self.assertEqual(result.stderr, b"")
+        self.assertFalse(self.capture.exists(), "A symlinked engine must not be executed.")
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell reparse-point checks require Windows")
+    def test_powershell_rejects_installed_engine_directory_junction(self) -> None:
+        engine_root = self.state / "engine"
+        engine_root.mkdir(parents=True)
+        external_version = self.temp_root / "external version"
+        external_engine_dir = external_version / expected_rid()
+        external_engine_dir.mkdir(parents=True)
+        shutil.copy2(sys.executable, external_engine_dir / "dotnet-nudge.exe")
+        version_link = engine_root / "1.2.3"
+        command = f'mklink /J "{version_link}" "{external_version}"'
+        result = subprocess.run(
+            ["cmd.exe", "/c", command],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if result.returncode != 0:
+            self.skipTest(
+                f"Could not create a Windows directory junction: "
+                f"{result.stderr.decode(errors='replace')}"
+            )
+        (engine_root / "current").write_text(
+            f"1.2.3/{expected_rid()}\n",
+            encoding="utf-8",
+        )
+        env = self.base_env()
+        env.pop("NUDGE_ENGINE_PATH")
+        result = self.run_powershell("copilot", "session-start", env)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout), {"additionalContext": SETUP_DIAGNOSTIC})
+        self.assertEqual(result.stderr, b"")
+        self.assertFalse(self.capture.exists(), "An engine behind a junction must not run.")
+
+    def test_current_rid_maps_each_advertised_platform_and_architecture(self) -> None:
+        for system, machine, expected in (
+            ("Linux", "x86_64", "linux-x64"),
+            ("Linux", "aarch64", "linux-arm64"),
+            ("Darwin", "x86_64", "osx-x64"),
+            ("Darwin", "arm64", "osx-arm64"),
+            ("Windows", "AMD64", "win-x64"),
+            ("Windows", "ARM64", "win-arm64"),
+        ):
+            with self.subTest(system=system, machine=machine):
+                with (
+                    patch.object(SETUP_RUNTIME.platform, "system", return_value=system),
+                    patch.object(SETUP_RUNTIME.platform, "machine", return_value=machine),
+                ):
+                    self.assertEqual(SETUP_RUNTIME.current_rid(), expected)
 
 
 class RuntimeSetupTests(unittest.TestCase):

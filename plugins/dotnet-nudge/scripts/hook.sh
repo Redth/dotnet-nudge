@@ -41,19 +41,30 @@ fi
 resolve_installed_engine() {
   local root="$1"
   local relative
+  local version
+  local rid
   local candidate
   local engine_root
+  local version_dir
+  local rid_dir
   local candidate_dir
   local resolved_root
 
-  [[ -r "$root/engine/current" ]] || return 1
-  IFS= read -r relative < "$root/engine/current" || return 1
-  [[ "$relative" =~ ^[0-9][0-9A-Za-z.+-]*/(linux|osx|win)-(x64|arm64)$ ]] || return 1
   engine_root="$root/engine"
-  candidate="$engine_root/$relative/dotnet-nudge"
-  [[ -f "$candidate" && -x "$candidate" ]] || return 1
+  [[ -d "$engine_root" && ! -L "$engine_root" ]] || return 1
+  [[ -r "$engine_root/current" && ! -L "$engine_root/current" ]] || return 1
+  IFS= read -r relative < "$engine_root/current" || return 1
+  [[ "$relative" =~ ^([0-9][0-9A-Za-z.+-]*)/((linux|osx|win)-(x64|arm64))$ ]] || return 1
+  version="${BASH_REMATCH[1]}"
+  rid="${BASH_REMATCH[2]}"
+  version_dir="$engine_root/$version"
+  rid_dir="$version_dir/$rid"
+  candidate="$rid_dir/dotnet-nudge"
+  [[ -d "$version_dir" && ! -L "$version_dir" ]] || return 1
+  [[ -d "$rid_dir" && ! -L "$rid_dir" ]] || return 1
+  [[ -f "$candidate" && -x "$candidate" && ! -L "$candidate" ]] || return 1
   resolved_root="$(CDPATH= cd -- "$engine_root" && pwd -P)" || return 1
-  candidate_dir="$(CDPATH= cd -- "$(dirname -- "$candidate")" && pwd -P)" || return 1
+  candidate_dir="$(CDPATH= cd -- "$rid_dir" && pwd -P)" || return 1
   case "$candidate_dir/" in
     "$resolved_root"/*)
       ENGINE_CANDIDATE="$candidate"
@@ -79,6 +90,7 @@ elif [[ -n "${CLAUDE_PLUGIN_DATA:-}" ]] && resolve_installed_engine "$CLAUDE_PLU
 fi
 
 if [[ -n "$engine_path" && -f "$engine_path" && -x "$engine_path" ]]; then
+  export NUDGE_STATE_DIR="$data_root"
   exec "$engine_path" hook --host "$host" --event "$event"
 fi
 
@@ -102,11 +114,30 @@ if [[ -z "$diagnostic" ]]; then
   exit 0
 fi
 
-if mkdir -p -- "$data_root" 2>/dev/null; then
-  marker="$data_root/.setup-required-notice-shown"
-  if (set -o noclobber; : > "$marker") 2>/dev/null; then
-    printf '%s\n' "$diagnostic"
+write_state_error() {
+  printf '%s\n' "dotnet-nudge: unable to persist the one-time setup notice in '$data_root'; set NUDGE_STATE_DIR to writable storage." >&2
+}
+
+if ! mkdir -p -- "$data_root" 2>/dev/null; then
+  write_state_error
+  exit 0
+fi
+
+marker="$data_root/.setup-required-notice-shown"
+if [[ -e "$marker" || -L "$marker" ]]; then
+  if [[ -f "$marker" && ! -L "$marker" ]]; then
+    exit 0
   fi
+  write_state_error
+  exit 0
+fi
+
+if (set -o noclobber; : > "$marker") 2>/dev/null; then
+  printf '%s\n' "$diagnostic"
+elif [[ -f "$marker" && ! -L "$marker" ]]; then
+  exit 0
+else
+  write_state_error
 fi
 
 exit 0

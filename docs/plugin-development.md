@@ -60,9 +60,9 @@ use no `jq` or Node.js.
 If no engine is found, the wrapper emits one bounded, host-correct setup
 diagnostic and records its once-only marker in the writable state directory,
 not the plugin cache. `NUDGE_STATE_DIR` overrides the platform data location
-and is shared by the two adapters when set. If state storage is unavailable,
-the wrapper suppresses repeated setup messages rather than writing into the
-plugin cache.
+and is shared by the two adapters when set. If state storage is unavailable or
+invalid, the wrapper emits an explicit error to stderr and omits the chat
+diagnostic rather than writing into the plugin cache.
 
 ## Runtime setup boundary
 

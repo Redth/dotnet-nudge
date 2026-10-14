@@ -60,10 +60,10 @@ def current_rid() -> str:
     }.get(platform.system())
     machine = {
         "x86_64": "x64",
-        "AMD64": "x64",
+        "amd64": "x64",
         "aarch64": "arm64",
         "arm64": "arm64",
-    }.get(platform.machine())
+    }.get(platform.machine().lower())
     if not system or not machine:
         raise SetupError(f"Unsupported platform: {platform.system()} {platform.machine()}.")
     return f"{system}-{machine}"
