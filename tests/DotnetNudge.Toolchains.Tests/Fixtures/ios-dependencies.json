@@ -1,0 +1,11 @@
+{
+  "microsoft.net.sdk.ios": {
+    "xcode": {
+      "version": "[26.2,)",
+      "recommendedVersion": "26.2"
+    },
+    "sdk": {
+      "version": "26.2"
+    }
+  }
+}
