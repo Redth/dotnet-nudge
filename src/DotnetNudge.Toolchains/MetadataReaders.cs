@@ -120,20 +120,28 @@ public static class InstalledInventoryReader
                 _ => throw new JsonException("mode must be workload-set, loose-manifests, or unknown.")
             };
 
-            var manifests = new Dictionary<string, string>(StringComparer.Ordinal);
+            var manifests = new Dictionary<string, InstalledManifestInfo>(StringComparer.Ordinal);
             if (manifestElement.ValueKind != JsonValueKind.Object)
             {
-                throw new JsonException("manifests must be an object of manifest IDs to versions.");
+                throw new JsonException("manifests must be an object of manifest IDs to version and SDK feature band objects.");
             }
 
             foreach (var entry in manifestElement.EnumerateObject())
             {
-                if (entry.Value.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(entry.Value.GetString()))
+                if (entry.Value.ValueKind != JsonValueKind.Object)
                 {
-                    throw new JsonException($"Manifest version for '{entry.Name}' must be a non-empty string.");
+                    throw new JsonException($"Manifest identity for '{entry.Name}' must be an object.");
                 }
 
-                manifests.Add(entry.Name, entry.Value.GetString()!);
+                var version = GetString(entry.Value, "version");
+                var sdkBand = GetString(entry.Value, "sdkBand");
+                if (version is null || !ManifestVersioning.IsSupportedManifestVersion(version)
+                    || sdkBand is null || !SdkVersioning.IsCanonicalFeatureBand(sdkBand))
+                {
+                    throw new JsonException($"Manifest identity for '{entry.Name}' must contain a valid version and canonical SDK feature band.");
+                }
+
+                manifests.Add(entry.Name, new(version, sdkBand));
             }
 
             var workloads = new HashSet<string>(StringComparer.Ordinal);
@@ -189,8 +197,38 @@ public static class SafeMetadataReader
 {
     public const int DefaultMaximumBytes = 10 * 1024 * 1024;
 
-    public static string ReadFile(string path, int maximumBytes = DefaultMaximumBytes)
+    public static string ReadFile(string approvedRoot, string relativePath, int maximumBytes = DefaultMaximumBytes)
     {
+        if (string.IsNullOrWhiteSpace(approvedRoot) || string.IsNullOrWhiteSpace(relativePath)
+            || Path.IsPathRooted(relativePath))
+        {
+            throw new ArgumentException("A non-empty approved root and relative metadata path are required.");
+        }
+
+        var root = Path.GetFullPath(approvedRoot);
+        var target = Path.GetFullPath(Path.Combine(root, relativePath));
+        var relative = Path.GetRelativePath(root, target);
+        if (relative == "." || relative == ".."
+            || relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+            || Path.IsPathRooted(relative))
+        {
+            throw new UnauthorizedAccessException("Metadata path must remain beneath the approved root.");
+        }
+
+        RejectLinkedPath(root);
+        var current = root;
+        foreach (var component in relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+        {
+            if (component.Length == 0)
+            {
+                throw new UnauthorizedAccessException("Metadata path contains an invalid component.");
+            }
+
+            current = Path.Combine(current, component);
+            RejectLink(current);
+        }
+
+        var path = current;
         var info = new FileInfo(path);
         if (!info.Exists)
         {
@@ -204,6 +242,32 @@ public static class SafeMetadataReader
 
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         return ReadBounded(stream, maximumBytes);
+    }
+
+    private static void RejectLinkedPath(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var root = Path.GetPathRoot(fullPath)!;
+        var current = root;
+        foreach (var component in fullPath[root.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, component);
+            RejectLink(current);
+        }
+    }
+
+    private static void RejectLink(string path)
+    {
+        FileSystemInfo info = Directory.Exists(path) ? new DirectoryInfo(path) : new FileInfo(path);
+        if (!info.Exists)
+        {
+            return;
+        }
+
+        if ((info.Attributes & FileAttributes.ReparsePoint) != 0 || info.LinkTarget is not null)
+        {
+            throw new UnauthorizedAccessException($"Metadata path contains a symbolic link or reparse point: '{path}'.");
+        }
     }
 
     public static string ReadArchiveEntry(Stream archiveStream, string exactEntryName, int maximumBytes = DefaultMaximumBytes)

@@ -15,25 +15,38 @@ Core project so both projects can be built and tested directly.
   and computes the exact `x.y.zzz` feature band.
 - `InstalledInventoryReader.Parse` accepts an explicit read-only inventory
   document containing `mode`, optional `workloadSetVersion`, `manifests`, and
-  `workloads`. It does not execute workload commands or inspect an inferred
-  machine-wide location.
+  `workloads`. Manifest identities include a validated manifest version and
+  canonical SDK feature band. It does not execute workload commands or inspect
+  an inferred machine-wide location.
 - `WorkloadCompatibilityAnalyzer.Analyze` accepts exact workload-set candidates,
   selected workload IDs, the selected set's `WorkloadDependencies.json`
   documents, project tuple context, and optional installed inventory. A pin is
   resolved only to metadata for the effective SDK band. Without a pin, the
   newest eligible candidate is selected only from that band; the newest
   candidate in a different band is never a substitute.
+  SDK feature-band identities must be canonical (for example, `9.0.100`, not
+  `9.0.101`), and manifest versions are parsed before they are accepted from set
+  mappings, dependency document identities, or installed inventory.
 - `HostCompatibilityAnalyzer.Analyze` compares Xcode/JDK ranges and exact
-  Android compile API, build-tools, and package requirements against a supplied
-  inventory. Its `ProcessLocalSuggestions` are data only; the library never
-  applies them.
+  Android workload and project compile API/build-tools requirements against a
+  supplied inventory. Project target API and minimum supported OS remain
+  separate project facts. Its `ProcessLocalSuggestions` are data only; the
+  library never applies them.
 - `RuntimeServicingAnalyzer.Analyze` parses the official channel `releases`
   collection and compares the three shared-framework families independently.
-  Results distinguish local framework-dependent runtime updates,
-  self-contained republishing, declared container-image drift, and unknown
-  deployment state.
-- `SafeMetadataReader` reads a bounded file or one exact, normalized archive
-  entry in read mode. Archive paths are not extracted.
+  Local shared-runtime findings are distinct from deployment-component
+  findings. Container runtime versions and self-contained embedded runtime
+  versions must be supplied per framework; an image tag or workstation
+  inventory is not evidence of image contents. Framework-dependent production
+  runtime inventory remains unknown unless the caller supplies it.
+- Every analysis request supplies `FreshnessCriteria(AsOf, MaximumAge)`.
+  Evidence older than that caller-selected limit, future-dated evidence, or an
+  invalid negative age makes the overall result unknown and suppresses its
+  value. The library imposes no global freshness duration.
+- `SafeMetadataReader.ReadFile(approvedRoot, relativePath)` reads a bounded file
+  only when the normalized path stays within the approved root and no path
+  component is a symbolic link/reparse point. `ReadArchiveEntry` reads one
+  exact, normalized archive entry in read mode; archive paths are not extracted.
 
 All results preserve source timestamps/revisions through `Evidence` and use
 `Assessment` plus diagnostics to distinguish compatible, incompatible,
@@ -83,10 +96,13 @@ still unvalidated because this library does not build or execute applications.
 Runtime security release flags mean only that the release metadata marks that
 release as security servicing. They do not establish that a particular CVE
 affects a particular application. SDK servicing detection remains Core's
-responsibility. Workstation runtime inventory does not establish deployment
-contents: framework-dependent updates are local-runtime suggestions,
-self-contained deployments need republishing, container findings use only the
-declared image/runtime version, and unknown deployment is explicitly unknown.
+responsibility. Local framework findings may suggest servicing that local
+shared runtime, but do not prove deployment remediation. Self-contained
+deployment comparisons require explicit embedded-runtime versions and lead to
+republish suggestions. Container comparisons use only per-framework declared
+runtime component versions, not local shared frameworks or the image tag.
+Framework-dependent production runtime versions and unobserved self-contained
+contents are explicitly unknown.
 
 ## Not implemented here
 

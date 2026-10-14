@@ -14,6 +14,12 @@ public static class RuntimeServicingAnalyzer
 
     public static AnalysisResult<RuntimeServicingResult> Analyze(RuntimeServicingRequest request)
     {
+        var result = AnalyzeCore(request);
+        return FreshnessEvaluator.Apply(result, request.Freshness);
+    }
+
+    private static AnalysisResult<RuntimeServicingResult> AnalyzeCore(RuntimeServicingRequest request)
+    {
         IReadOnlyList<RuntimeRelease> releases;
         try
         {
@@ -29,7 +35,8 @@ public static class RuntimeServicingAnalyzer
         }
 
         var diagnostics = new List<Diagnostic>();
-        var findings = new List<RuntimeFrameworkFinding>();
+        var localFindings = new List<RuntimeFrameworkFinding>();
+        var deploymentFindings = new List<RuntimeFrameworkFinding>();
         var securityReleases = releases.Where(x => x.Security).ToArray();
         foreach (var installed in request.InstalledFrameworks)
         {
@@ -44,7 +51,8 @@ public static class RuntimeServicingAnalyzer
 
             if (!NuGetVersion.TryParse(installed.Version, out var installedVersion))
             {
-                findings.Add(new(
+                localFindings.Add(new(
+                    RuntimeObservationScope.LocalSharedRuntime,
                     installed.Name,
                     installed.Version,
                     null,
@@ -55,39 +63,12 @@ public static class RuntimeServicingAnalyzer
                 continue;
             }
 
-            var frameworkReleases = securityReleases
-                .Where(x => string.Equals(x.Framework, installed.Name, StringComparison.OrdinalIgnoreCase)
-                    && NuGetVersion.TryParse(x.Version, out var releaseVersion)
-                    && releaseVersion.Version.Major == installedVersion.Version.Major
-                    && releaseVersion.Version.Minor == installedVersion.Version.Minor)
-                .Select(x => (Release: x, Version: NuGetVersion.Parse(x.Version)))
-                .OrderBy(x => x.Version, VersionComparer.VersionRelease)
-                .ToArray();
-
-            if (frameworkReleases.Length == 0)
-            {
-                findings.Add(new(
-                    installed.Name,
-                    installed.Version,
-                    null,
-                    false,
-                    Assessment.Unknown,
-                    null,
-                    "No security servicing release for this installed major/minor was found in the supplied metadata; support status and compatibility are unknown."));
-                continue;
-            }
-
-            var latestSecurityRelease = frameworkReleases[^1];
-            var isNewer = VersionComparer.VersionRelease.Compare(latestSecurityRelease.Version, installedVersion) > 0;
-            var deploymentAction = GetDeploymentAction(request.Deployment, latestSecurityRelease.Release.Version, out var deploymentAssessment, out var detail);
-            findings.Add(new(
+            localFindings.Add(AssessObservedVersion(
+                RuntimeObservationScope.LocalSharedRuntime,
                 installed.Name,
                 installed.Version,
-                isNewer ? latestSecurityRelease.Release.Version : null,
-                isNewer,
-                isNewer ? deploymentAssessment : Assessment.Compatible,
-                isNewer ? deploymentAction : null,
-                isNewer ? detail : "Installed framework is at or beyond the newest security-servicing release in the supplied metadata."));
+                securityReleases,
+                "update-local-framework-dependent-runtime"));
         }
 
         if (request.InstalledFrameworks.Count == 0)
@@ -98,7 +79,60 @@ public static class RuntimeServicingAnalyzer
                 Assessment.Unknown));
         }
 
-        if (request.Deployment.Kind == RuntimeDeploymentKind.Unknown)
+        var declaredComponents = request.Deployment.Kind switch
+        {
+            RuntimeDeploymentKind.Container => request.Deployment.DeclaredContainerRuntimeVersions,
+            RuntimeDeploymentKind.SelfContained => request.Deployment.EmbeddedRuntimeVersions,
+            _ => null
+        };
+
+        if (request.Deployment.Kind is RuntimeDeploymentKind.Container or RuntimeDeploymentKind.SelfContained)
+        {
+            if (declaredComponents is null || declaredComponents.Count == 0)
+            {
+                diagnostics.Add(new(
+                    request.Deployment.Kind == RuntimeDeploymentKind.Container
+                        ? "runtime.container-components-missing"
+                        : "runtime.embedded-runtime-evidence-missing",
+                    request.Deployment.Kind == RuntimeDeploymentKind.Container
+                        ? "No per-framework runtime versions were supplied for the declared container image; image tags and workstation runtimes do not prove its contents."
+                        : "Self-contained runtime contents are unknown without explicit embedded-runtime version evidence.",
+                    Assessment.Unknown));
+            }
+            else
+            {
+                foreach (var (framework, version) in declaredComponents)
+                {
+                    if (!SupportedFrameworks.Contains(framework, StringComparer.OrdinalIgnoreCase))
+                    {
+                        diagnostics.Add(new(
+                            "runtime.framework-unsupported",
+                            $"Deployment component '{framework}' is not a supported shared framework and was not guessed.",
+                            Assessment.Partial));
+                        continue;
+                    }
+
+                    deploymentFindings.Add(AssessObservedVersion(
+                        request.Deployment.Kind == RuntimeDeploymentKind.Container
+                            ? RuntimeObservationScope.DeclaredContainerRuntime
+                            : RuntimeObservationScope.EmbeddedSelfContainedRuntime,
+                        framework,
+                        version,
+                        securityReleases,
+                        request.Deployment.Kind == RuntimeDeploymentKind.Container
+                            ? "update-container-runtime-image-and-redeploy"
+                            : "republish-self-contained-application"));
+                }
+            }
+        }
+        else if (request.Deployment.Kind == RuntimeDeploymentKind.FrameworkDependent)
+        {
+            diagnostics.Add(new(
+                "runtime.deployment-runtime-unknown",
+                "A framework-dependent deployment's runtime inventory was not supplied; workstation shared-framework evidence is reported separately and does not establish a production runtime.",
+                Assessment.Unknown));
+        }
+        else
         {
             diagnostics.Add(new(
                 "runtime.deployment-unknown",
@@ -106,16 +140,17 @@ public static class RuntimeServicingAnalyzer
                 Assessment.Unknown));
         }
 
-        var assessment = findings.Any(x => x.Assessment == Assessment.Blocked)
+        var allFindings = localFindings.Concat(deploymentFindings).ToArray();
+        var assessment = allFindings.Any(x => x.Assessment == Assessment.Blocked)
             ? Assessment.Blocked
-            : findings.Any(x => x.Assessment == Assessment.Unknown)
+            : allFindings.Any(x => x.Assessment == Assessment.Unknown)
                 || diagnostics.Any(x => x.Assessment == Assessment.Unknown)
                     ? Assessment.Unknown
-                    : findings.Any(x => x.Assessment == Assessment.Partial)
+                    : allFindings.Any(x => x.Assessment == Assessment.Partial)
                         || diagnostics.Count > 0
                             ? Assessment.Partial
                             : Assessment.Compatible;
-        var result = new RuntimeServicingResult(findings, request.Deployment, securityReleases);
+        var result = new RuntimeServicingResult(localFindings, deploymentFindings, request.Deployment, securityReleases);
         return new(result, assessment, RequestEvidence(request), diagnostics);
     }
 
@@ -173,53 +208,45 @@ public static class RuntimeServicingAnalyzer
         return releases;
     }
 
-    private static string? GetDeploymentAction(
-        RuntimeDeployment deployment,
-        string securityVersion,
-        out Assessment assessment,
-        out string detail)
+    private static RuntimeFrameworkFinding AssessObservedVersion(
+        RuntimeObservationScope scope,
+        string framework,
+        string observedText,
+        IReadOnlyCollection<RuntimeRelease> securityReleases,
+        string updateAction)
     {
-        detail = string.Empty;
-        switch (deployment.Kind)
+        if (!NuGetVersion.TryParse(observedText, out var observedVersion))
         {
-            case RuntimeDeploymentKind.FrameworkDependent:
-                assessment = Assessment.Partial;
-                detail = "Security servicing is available for a local framework-dependent runtime; deployment remediation is not inferred.";
-                return "update-local-framework-dependent-runtime";
-            case RuntimeDeploymentKind.SelfContained:
-                assessment = Assessment.Partial;
-                detail = "Self-contained applications must be republished with patched runtime assets.";
-                return "republish-self-contained-application";
-            case RuntimeDeploymentKind.Container:
-                if (!NuGetVersion.TryParse(deployment.DeclaredRuntimeImageVersion, out var imageVersion))
-                {
-                    assessment = Assessment.Unknown;
-                    detail = "The declared container/runtime image version is missing or unsupported; host runtimes do not establish image contents.";
-                    return null;
-                }
-
-                if (!NuGetVersion.TryParse(securityVersion, out var requiredVersion))
-                {
-                    assessment = Assessment.Unknown;
-                    detail = "The supplied security release version is unsupported.";
-                    return null;
-                }
-
-                if (VersionComparer.VersionRelease.Compare(imageVersion, requiredVersion) < 0)
-                {
-                    assessment = Assessment.Partial;
-                    detail = $"Declared runtime image {deployment.DeclaredImage ?? "(unspecified)"} is older than security-servicing runtime {securityVersion}; update the image and redeploy.";
-                    return "update-container-runtime-image-and-redeploy";
-                }
-
-                assessment = Assessment.Compatible;
-                detail = "Declared runtime image version is at or beyond the supplied security-servicing version; the image was not executed or inspected.";
-                return null;
-            default:
-                assessment = Assessment.Unknown;
-                detail = "Deployment kind is unknown; workstation metadata cannot prove production remediation.";
-                return null;
+            return new(scope, framework, observedText, null, false, Assessment.Unknown, null,
+                "Observed framework version is not in a supported NuGet version format.");
         }
+
+        var latest = securityReleases
+            .Where(x => string.Equals(x.Framework, framework, StringComparison.OrdinalIgnoreCase)
+                && NuGetVersion.TryParse(x.Version, out var releaseVersion)
+                && releaseVersion.Version.Major == observedVersion.Version.Major
+                && releaseVersion.Version.Minor == observedVersion.Version.Minor)
+            .Select(x => (Release: x, Version: NuGetVersion.Parse(x.Version)))
+            .OrderBy(x => x.Version, VersionComparer.VersionRelease)
+            .LastOrDefault();
+        if (latest.Release is null)
+        {
+            return new(scope, framework, observedText, null, false, Assessment.Unknown, null,
+                "No security servicing release for this observed major/minor was found in supplied metadata; support status and compatibility are unknown.");
+        }
+
+        var needsServicing = VersionComparer.VersionRelease.Compare(latest.Version, observedVersion) > 0;
+        return new(
+            scope,
+            framework,
+            observedText,
+            needsServicing ? latest.Release.Version : null,
+            needsServicing,
+            needsServicing ? Assessment.Partial : Assessment.Compatible,
+            needsServicing ? updateAction : null,
+            needsServicing
+                ? $"A security-servicing release {latest.Release.Version} is newer than the observed {scope} version; this is servicing evidence, not an application-specific vulnerability diagnosis."
+                : $"Observed {scope} version is at or beyond the newest security-servicing release in the supplied metadata.");
     }
 
     private static void AddComponent(

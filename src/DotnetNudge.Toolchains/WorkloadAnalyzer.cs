@@ -7,9 +7,23 @@ public static class WorkloadCompatibilityAnalyzer
 {
     public static AnalysisResult<WorkloadAnalysis> Analyze(WorkloadAnalysisRequest request)
     {
+        var result = AnalyzeCore(request);
+        return FreshnessEvaluator.Apply(result, request.Freshness);
+    }
+
+    private static AnalysisResult<WorkloadAnalysis> AnalyzeCore(WorkloadAnalysisRequest request)
+    {
         if (!SdkVersioning.TryGetFeatureBand(request.SdkVersion, out var featureBand))
         {
             return Failure("sdk.version-unknown", $"SDK version '{request.SdkVersion}' is not a supported .NET version format.");
+        }
+
+        if (request.AvailableSets.Any(x =>
+                SdkVersioning.TryGetFeatureBand(x.SdkFeatureBand, out var normalizedBand)
+                && string.Equals(normalizedBand, featureBand, StringComparison.Ordinal)
+                && !SdkVersioning.IsCanonicalFeatureBand(x.SdkFeatureBand)))
+        {
+            return Failure("workload-set.band-invalid", "A supplied workload set uses a non-canonical SDK feature band.");
         }
 
         var bandCandidates = request.AvailableSets
@@ -147,8 +161,9 @@ public static class WorkloadCompatibilityAnalyzer
                 }
 
                 var parts = mapping.GetString()!.Split('/');
-                if (parts.Length != 2 || string.IsNullOrWhiteSpace(parts[0])
-                    || !SdkVersioning.TryGetFeatureBand(parts[1], out _))
+                if (parts.Length != 2
+                    || !ManifestVersioning.IsSupportedManifestVersion(parts[0])
+                    || !SdkVersioning.IsCanonicalFeatureBand(parts[1]))
                 {
                     diagnostics.Add(new(
                         "workload-set.manifest-mapping-unknown",
@@ -169,7 +184,9 @@ public static class WorkloadCompatibilityAnalyzer
                 }
 
                 evidence.Add(dependencyDocument.Evidence);
-                if (!string.Equals(dependencyDocument.ManifestVersion, manifest.ManifestVersion, StringComparison.Ordinal)
+                if (!ManifestVersioning.IsSupportedManifestVersion(dependencyDocument.ManifestVersion ?? string.Empty)
+                    || !SdkVersioning.IsCanonicalFeatureBand(dependencyDocument.SdkFeatureBand ?? string.Empty)
+                    || !string.Equals(dependencyDocument.ManifestVersion, manifest.ManifestVersion, StringComparison.Ordinal)
                     || !string.Equals(dependencyDocument.SdkFeatureBand, manifest.ManifestSdkBand, StringComparison.Ordinal))
                 {
                     diagnostics.Add(new(
@@ -239,12 +256,14 @@ public static class WorkloadCompatibilityAnalyzer
             var newer = sameBandCandidates
                 .OrderBy(x => NuGetVersion.Parse(x.UserFacingVersion), VersionComparer.VersionRelease)
                 .LastOrDefault();
+            var selectedVersion = NuGetVersion.Parse(selected.UserFacingVersion);
+            var newerVersion = newer is null ? null : NuGetVersion.Parse(newer.UserFacingVersion);
             var selection = new WorkloadSelection(
                 request.SdkVersion,
                 featureBand,
                 selected.UserFacingVersion,
                 newer is not null
-                    && !string.Equals(newer.UserFacingVersion, selected.UserFacingVersion, StringComparison.Ordinal)
+                    && VersionComparer.VersionRelease.Compare(newerVersion, selectedVersion) > 0
                     ? newer.UserFacingVersion
                     : null,
                 packageVersion,
@@ -462,18 +481,27 @@ public static class WorkloadCompatibilityAnalyzer
 
         foreach (var manifest in manifests)
         {
-            if (!inventory.ManifestVersions.TryGetValue(manifest.WorkloadId, out var installedVersion))
+            if (!inventory.Manifests.TryGetValue(manifest.WorkloadId, out var installedManifest))
             {
                 diagnostics.Add(new(
                     "inventory.manifest-missing",
                     $"Installed manifest version for '{manifest.WorkloadId}' was not observed.",
                     Assessment.Unknown));
             }
-            else if (!string.Equals(installedVersion, manifest.ManifestVersion, StringComparison.Ordinal))
+            else if (!ManifestVersioning.IsSupportedManifestVersion(installedManifest.Version)
+                || !SdkVersioning.IsCanonicalFeatureBand(installedManifest.SdkFeatureBand))
+            {
+                diagnostics.Add(new(
+                    "inventory.manifest-invalid",
+                    $"Installed manifest identity for '{manifest.WorkloadId}' has an unsupported version or non-canonical SDK feature band.",
+                    Assessment.Unknown));
+            }
+            else if (!string.Equals(installedManifest.Version, manifest.ManifestVersion, StringComparison.Ordinal)
+                || !string.Equals(installedManifest.SdkFeatureBand, manifest.ManifestSdkBand, StringComparison.Ordinal))
             {
                 diagnostics.Add(new(
                     "inventory.manifest-differs",
-                    $"Installed manifest '{manifest.WorkloadId}' is {installedVersion}; analyzed set selects {manifest.ManifestVersion}.",
+                    $"Installed manifest '{manifest.WorkloadId}' is {installedManifest.Version}/{installedManifest.SdkFeatureBand}; analyzed set selects {manifest.ManifestVersion}/{manifest.ManifestSdkBand}.",
                     Assessment.Incompatible));
             }
         }
@@ -490,6 +518,12 @@ public static class WorkloadCompatibilityAnalyzer
 public static class HostCompatibilityAnalyzer
 {
     public static AnalysisResult<HostCompatibilityResult> Analyze(HostCompatibilityRequest request)
+    {
+        var result = AnalyzeCore(request);
+        return FreshnessEvaluator.Apply(result, request.Freshness);
+    }
+
+    private static AnalysisResult<HostCompatibilityResult> AnalyzeCore(HostCompatibilityRequest request)
     {
         var checks = new List<HostRequirementCheck>();
         var diagnostics = new List<Diagnostic>();
@@ -592,6 +626,42 @@ public static class HostCompatibilityAnalyzer
                     package,
                     observed,
                     assessment));
+            }
+        }
+
+        foreach (var target in request.Analysis.Selection.TupleContext.AndroidTargets ?? [])
+        {
+            var workloadId = $"project:{target.TargetFramework}";
+            if (target.CompileApiLevel is { } compileApi)
+            {
+                var android = request.Inventory?.Android;
+                var observed = android is null
+                    ? null
+                    : string.Join(",", android.InstalledPlatforms.Order(StringComparer.Ordinal));
+                var assessment = android is null
+                    ? Assessment.Unknown
+                    : android.InstalledPlatforms.Contains(compileApi) ? Assessment.Compatible : Assessment.Incompatible;
+                checks.Add(new(
+                    workloadId,
+                    "Android project compile API",
+                    compileApi,
+                    observed,
+                    assessment,
+                    assessment == Assessment.Incompatible
+                        ? "The project compile API platform is missing; minimum supported OS and target API are not changed."
+                        : null));
+            }
+
+            if (target.BuildToolsVersion is { } projectBuildTools)
+            {
+                var android = request.Inventory?.Android;
+                var observed = android is null
+                    ? null
+                    : string.Join(",", android.InstalledBuildTools.Order(StringComparer.Ordinal));
+                var assessment = android is null
+                    ? Assessment.Unknown
+                    : android.InstalledBuildTools.Contains(projectBuildTools) ? Assessment.Compatible : Assessment.Incompatible;
+                checks.Add(new(workloadId, "Android project build tools", projectBuildTools, observed, assessment));
             }
         }
 

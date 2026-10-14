@@ -27,11 +27,20 @@ public enum RuntimeDeploymentKind
     Unknown
 }
 
+public enum RuntimeObservationScope
+{
+    LocalSharedRuntime,
+    DeclaredContainerRuntime,
+    EmbeddedSelfContainedRuntime
+}
+
 public sealed record Evidence(
     string Source,
     DateTimeOffset RetrievedAt,
     string? Revision = null,
     string? Detail = null);
+
+public sealed record FreshnessCriteria(DateTimeOffset AsOf, TimeSpan MaximumAge);
 
 public sealed record Diagnostic(string Code, string Message, Assessment Assessment);
 
@@ -59,10 +68,12 @@ public sealed record WorkloadSetCandidate(
     string? NuGetPackageVersion,
     VersionedJsonDocument WorkloadSetManifest);
 
+public sealed record InstalledManifestInfo(string Version, string SdkFeatureBand);
+
 public sealed record InstalledWorkloadInventory(
     WorkloadInstallMode Mode,
     string? WorkloadSetVersion,
-    IReadOnlyDictionary<string, string> ManifestVersions,
+    IReadOnlyDictionary<string, InstalledManifestInfo> Manifests,
     IReadOnlySet<string> Workloads,
     Evidence Evidence);
 
@@ -88,7 +99,8 @@ public sealed record WorkloadAnalysisRequest(
     IReadOnlySet<string> SelectedWorkloads,
     IReadOnlyDictionary<string, VersionedJsonDocument> DependencyDocumentsByWorkload,
     WorkloadTupleContext TupleContext,
-    InstalledWorkloadInventory? InstalledInventory);
+    InstalledWorkloadInventory? InstalledInventory,
+    FreshnessCriteria Freshness);
 
 public sealed record WorkloadManifestSelection(
     string WorkloadId,
@@ -155,6 +167,7 @@ public sealed record HostCompatibilityRequest(
     HostToolInventory? Inventory,
     IReadOnlyList<PlatformTargetAvailability> Targets,
     ProcessLocalSuggestions Suggestions,
+    FreshnessCriteria Freshness,
     IReadOnlyDictionary<string, VersionRequirement>? MacOsRequirementsByWorkload = null);
 
 public sealed record HostRequirementCheck(
@@ -184,19 +197,22 @@ public sealed record RuntimeRelease(
 
 public sealed record RuntimeDeployment(
     RuntimeDeploymentKind Kind,
-    string? DeclaredRuntimeImageVersion = null,
     string? DeclaredImage = null,
+    IReadOnlyDictionary<string, string>? DeclaredContainerRuntimeVersions = null,
+    IReadOnlyDictionary<string, string>? EmbeddedRuntimeVersions = null,
     Evidence? Evidence = null);
 
 public sealed record RuntimeServicingRequest(
     VersionedJsonDocument ReleasesMetadata,
     IReadOnlyList<InstalledRuntimeFramework> InstalledFrameworks,
     RuntimeDeployment Deployment,
+    FreshnessCriteria Freshness,
     Evidence? InventoryEvidence = null);
 
 public sealed record RuntimeFrameworkFinding(
+    RuntimeObservationScope Scope,
     string Framework,
-    string InstalledVersion,
+    string ObservedVersion,
     string? SecurityServicingVersion,
     bool SecurityReleaseAvailable,
     Assessment Assessment,
@@ -204,7 +220,8 @@ public sealed record RuntimeFrameworkFinding(
     string? Detail);
 
 public sealed record RuntimeServicingResult(
-    IReadOnlyList<RuntimeFrameworkFinding> Frameworks,
+    IReadOnlyList<RuntimeFrameworkFinding> LocalFrameworks,
+    IReadOnlyList<RuntimeFrameworkFinding> DeploymentFrameworks,
     RuntimeDeployment Deployment,
     IReadOnlyList<RuntimeRelease> SecurityReleases);
 
@@ -228,6 +245,13 @@ public static class SdkVersioning
         featureBand = $"{parsed.Version.Major}.{parsed.Version.Minor}.{band:000}";
         return true;
     }
+
+    public static bool IsCanonicalFeatureBand(string value) =>
+        TryGetFeatureBand(value, out var featureBand)
+        && NuGet.Versioning.NuGetVersion.TryParse(value, out var parsed)
+        && parsed.Version.Build >= 100
+        && parsed.Version.Build % 100 == 0
+        && string.Equals(value, featureBand, StringComparison.Ordinal);
 }
 
 public static class WorkloadVersioning
@@ -256,4 +280,15 @@ public static class WorkloadVersioning
         packageVersion = $"{version.Version.Major}.{version.Version.Build}.0";
         return true;
     }
+}
+
+public static class ManifestVersioning
+{
+    private static readonly Regex SupportedManifestVersion = new(
+        @"\A[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?\z",
+        RegexOptions.CultureInvariant);
+
+    public static bool IsSupportedManifestVersion(string version) =>
+        SupportedManifestVersion.IsMatch(version)
+        && NuGet.Versioning.NuGetVersion.TryParse(version, out _);
 }
