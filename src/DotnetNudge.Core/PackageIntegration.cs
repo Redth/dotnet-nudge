@@ -181,24 +181,40 @@ public static class PackageIntegration
         if (entry is not null && Environment.GetEnvironmentVariable("NUDGE_INSPECTOR_PATH")
             is { Length: > 0 } executable)
         {
-            var inspector = new InspectorAdapter(executable);
-            var (rows, inventory) = await inspector.InventoryAsync(
-                selectedProject!, selectedAssets!, reader, token);
-            var matches = rows.Where(r =>
-                r.PackageId.Equals(selected!.PackageId, StringComparison.OrdinalIgnoreCase) &&
-                r.Version == selected.Version && r.Path == entry.Path &&
-                r.AssetsFingerprint == selected.AssetsFingerprint).ToArray();
-            if (inventory.Status == EvidenceStatus.Complete && matches.Length == 1)
+            bool native;
+            try { native = DotnetProbes.IsNativeExecutable(executable); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                var result = await inspector.ReadProjectSkillAsync(
-                    selectedProject!, selectedAssets!, matches[0], reader, token);
-                if (result.Status == EvidenceStatus.Complete && result.Content is { } text &&
-                    Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))) == entry.Sha256)
-                    entry = entry with { Text = text };
-                else diagnostics.Add(result.Diagnostic ?? "Pinned inspector content differed from exact restored package bytes; local reader was used.");
+                diagnostics.Add($"Configured inspector could not be inspected ({ex.Message}); local reader was used.");
+                native = false;
             }
-            else diagnostics.Add(inventory.Diagnostic ??
-                "Pinned inspector row was missing or ambiguous for the selected package scope; local reader was used.");
+            if (!native)
+            {
+                if (!diagnostics.Any(d => d.StartsWith("Configured inspector", StringComparison.Ordinal)))
+                    diagnostics.Add("Configured inspector is not an installed native executable; local reader was used.");
+            }
+            else
+            {
+                var inspector = new InspectorAdapter(WorkspaceDiscovery.Canonical(executable));
+                var (rows, inventory) = await inspector.InventoryAsync(
+                    selectedProject!, selectedAssets!, reader, token);
+                var matches = rows.Where(r =>
+                    r.PackageId.Equals(selected!.PackageId, StringComparison.OrdinalIgnoreCase) &&
+                    r.Version == selected.Version && r.Path == entry.Path &&
+                    r.AssetsFingerprint == selected.AssetsFingerprint).ToArray();
+                if (inventory.Status == EvidenceStatus.Complete && matches.Length == 1)
+                {
+                    var result = await inspector.ReadProjectSkillAsync(
+                        selectedProject!, selectedAssets!, matches[0], reader, token);
+                    if (result.Status == EvidenceStatus.Complete && result.Content is { } text &&
+                        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))) == entry.Sha256)
+                        entry = entry with { Text = text };
+                    else diagnostics.Add(result.Diagnostic ??
+                        "Pinned inspector content differed from exact restored package bytes; local reader was used.");
+                }
+                else diagnostics.Add(inventory.Diagnostic ??
+                    "Pinned inspector row was missing or ambiguous for the selected package scope; local reader was used.");
+            }
         }
         return new(Contract.Version, workspace.WorkspaceId,
             diagnostics.Count == 0 ? Assessment.Confirmed :

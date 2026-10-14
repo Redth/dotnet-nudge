@@ -399,6 +399,22 @@ public sealed class ProtocolTests
                 Assert.Equal(handle, selected.Selected!.Handle);
                 Assert.Contains("Details", selected.Entry!.Text);
                 Assert.Equal("Local guidance reference.", Assert.Single(selected.References).Text);
+                if (!OperatingSystem.IsWindows())
+                {
+                    var originalInspector = Environment.GetEnvironmentVariable("NUDGE_INSPECTOR_PATH");
+                    var script = Path.Combine(root, "fake-inspector");
+                    var marker = Path.Combine(root, "inspector-ran");
+                    try
+                    {
+                        File.WriteAllText(script, $"#!/bin/sh\ntouch '{marker}'\necho 0.26.0\n");
+                        Environment.SetEnvironmentVariable("NUDGE_INSPECTOR_PATH", script);
+                        var fallback = await service.PackageContextAsync(root, handle);
+                        Assert.Equal(Assessment.Partial, fallback.Assessment);
+                        Assert.Contains("not an installed native executable", fallback.Diagnostic);
+                        Assert.False(File.Exists(marker));
+                    }
+                    finally { Environment.SetEnvironmentVariable("NUDGE_INSPECTOR_PATH", originalInspector); }
+                }
                 var engine = Environment.GetEnvironmentVariable("NUDGE_INTEGRATION_ENGINE_PATH");
                 var transport = new StdioClientTransport(new StdioClientTransportOptions
                 {

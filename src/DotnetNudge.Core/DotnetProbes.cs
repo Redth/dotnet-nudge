@@ -69,19 +69,24 @@ public static class DotnetProbes
             var file = Path.Combine(root, name);
             if (!File.Exists(file)) continue;
             file = WorkspaceDiscovery.Canonical(file);
-            using var stream = File.OpenRead(file);
-            Span<byte> signature = stackalloc byte[4];
-            if (stream.Read(signature) != 4) return null;
-            if (OperatingSystem.IsWindows())
-                return signature[0] == 'M' && signature[1] == 'Z' ? file : null;
-            if (OperatingSystem.IsLinux())
-                return signature[0] == 0x7f && signature[1] == 'E'
-                    && signature[2] == 'L' && signature[3] == 'F' ? file : null;
-            var magic = Convert.ToHexString(signature);
-            return magic is "FEEDFACF" or "CFFAEDFE" or "CAFEBABE" or "BEBAFECA"
-                ? file : null;
+            return IsNativeExecutable(file) ? file : null;
         }
         return null;
+    }
+
+    public static bool IsNativeExecutable(string file)
+    {
+        if (!File.Exists(file)) return false;
+        using var stream = File.OpenRead(WorkspaceDiscovery.Canonical(file));
+        Span<byte> signature = stackalloc byte[4];
+        if (stream.Read(signature) != 4) return false;
+        if (OperatingSystem.IsWindows())
+            return signature[0] == 'M' && signature[1] == 'Z';
+        if (OperatingSystem.IsLinux())
+            return signature[0] == 0x7f && signature[1] == 'E'
+                && signature[2] == 'L' && signature[3] == 'F';
+        var magic = Convert.ToHexString(signature);
+        return magic is "FEEDFACF" or "CFFAEDFE" or "CAFEBABE" or "BEBAFECA";
     }
 
     static async Task<string?> Probe(string executable, string scope, string[] arguments,
