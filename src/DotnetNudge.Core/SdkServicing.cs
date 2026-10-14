@@ -250,14 +250,17 @@ public static class SdkServicing
 public sealed class NudgeScanner(IReleaseMetadata metadata, TimeProvider? clock = null)
 {
     public async Task<ScanReport> ScanAsync(string workspace, CancellationToken cancellationToken = default,
-        bool probeInstalled = false)
+        bool probeInstalled = false, NudgeState? state = null)
     {
         var inventory = WorkspaceDiscovery.Discover(workspace);
         var (findings, sdkCoverage) = await SdkServicing.CheckAsync(inventory, metadata, clock, cancellationToken);
         var observed = probeInstalled ? await DotnetProbes.ReadAsync(inventory, cancellationToken) : null;
-        return new(Contract.Version, inventory, findings,
+        var packages = state is null ? null : await PackageIntegration.ScanAsync(inventory,
+            state.DirectoryPath, cancellationToken);
+        return new(Contract.Version, inventory, findings.Concat(packages?.Findings ?? []).ToArray(),
             inventory.Coverage.Where(c => observed is null || c.Check != "effective-sdk")
-                .Concat(sdkCoverage).Concat(observed?.Coverage ?? []).ToArray(),
+                .Concat(sdkCoverage).Concat(observed?.Coverage ?? [])
+                .Concat(packages?.Coverage ?? []).ToArray(),
             (clock ?? TimeProvider.System).GetUtcNow());
     }
 }

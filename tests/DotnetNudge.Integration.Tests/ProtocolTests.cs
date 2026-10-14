@@ -339,4 +339,80 @@ public sealed class ProtocolTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    [Fact]
+    public async Task RestoredGraphBaselineTransitionAndExactGuidanceHandle()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "nudge-graph-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+                var project = Path.Combine(root, "App.csproj");
+                File.WriteAllText(project, """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>""");
+                var cache = Path.Combine(root, "cache");
+                var package = Path.Combine(cache, "acme.parent", "1.0.0");
+                var skill = Path.Combine(package, "skills", "review");
+                Directory.CreateDirectory(skill);
+                File.WriteAllText(Path.Combine(package, "acme.parent.nuspec"),
+                    """<package><metadata><id>Acme.Parent</id><version>1.0.0</version></metadata></package>""");
+                File.WriteAllText(Path.Combine(skill, "SKILL.md"),
+                    "---\nname: review\ndescription: Read this package\n---\n[Details](details.md)\n");
+                File.WriteAllText(Path.Combine(skill, "details.md"), "Local guidance reference.");
+                var assets = Path.Combine(root, "obj", "project.assets.json");
+                Directory.CreateDirectory(Path.GetDirectoryName(assets)!);
+                var fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "graph.json"))
+                    .Replace("{CACHE}", cache.Replace('\\', '/'), StringComparison.Ordinal)
+                    .Replace("{PROJECT}", project.Replace('\\', '/'), StringComparison.Ordinal)
+                    .Replace("{OUTPUT}", Path.GetDirectoryName(assets)!.Replace('\\', '/'), StringComparison.Ordinal);
+                File.WriteAllText(assets, fixture);
+                var stateDir = Path.Combine(root, "state");
+                var inventory = WorkspaceDiscovery.Discover(root);
+                var first = await PackageIntegration.ScanAsync(inventory, stateDir, CancellationToken.None);
+                Assert.Empty(first.Findings);
+                Assert.Contains(first.Coverage, c => c.Check == "package-graph:App.csproj" &&
+                    c.Assessment == Assessment.Confirmed);
+                using var state = new NudgeState(stateDir);
+                using var service = new NudgeService(state);
+                var listed = await service.PackageContextAsync(root);
+                Assert.Equal(2, listed.Skills.Count);
+                Assert.Contains(listed.Skills, s => s.Framework == "net10.0" &&
+                    s.RuntimeIdentifier == "osx-arm64");
+                var handle = listed.Skills.Single(s => s.Framework == "net8.0").Handle;
+                var selected = await service.PackageContextAsync(root, handle);
+                Assert.Equal(handle, selected.Selected!.Handle);
+                Assert.Contains("Details", selected.Entry!.Text);
+                Assert.Equal("Local guidance reference.", Assert.Single(selected.References).Text);
+                var engine = Environment.GetEnvironmentVariable("NUDGE_INTEGRATION_ENGINE_PATH");
+                var transport = new StdioClientTransport(new StdioClientTransportOptions
+                {
+                    Name = "guidance-fixture",
+                    Command = engine ?? "dotnet",
+                    Arguments = engine is null
+                        ? [typeof(DotnetNudge.McpEndpoint).Assembly.Location, "mcp", "--state-dir", stateDir]
+                        : ["mcp", "--state-dir", stateDir],
+                    WorkingDirectory = root
+                });
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                await using (var client = await McpClient.CreateAsync(transport, cancellationToken: timeout.Token))
+                {
+                    Assert.Contains(await client.ListToolsAsync(cancellationToken: timeout.Token),
+                        tool => tool.Name == "nudge_package_context");
+                    var call = await client.CallToolAsync("nudge_package_context",
+                        new Dictionary<string, object?> { ["workspace"] = root, ["handle"] = handle },
+                        cancellationToken: timeout.Token);
+                    Assert.True(call.IsError != true);
+                    using var payload = JsonDocument.Parse(Assert.Single(
+                        call.Content.OfType<TextContentBlock>()).Text);
+                    Assert.Equal("Local guidance reference.", payload.RootElement
+                        .GetProperty("references")[0].GetProperty("text").GetString());
+                }
+                File.WriteAllText(assets, fixture.Replace("1.0.0", "1.0.1", StringComparison.Ordinal));
+                await Assert.ThrowsAsync<InvalidOperationException>(() => service.PackageContextAsync(root, handle));
+                var changed = await PackageIntegration.ScanAsync(inventory, stateDir, CancellationToken.None);
+                Assert.Contains(changed.Findings, f => f.Kind == "restored-graph-change" &&
+                    f.Scope.Project == "App.csproj" && f.Scope.Framework == "net8.0" &&
+                    f.Current == "1.0.0" && f.Candidate == "1.0.1");
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
 }

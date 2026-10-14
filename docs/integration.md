@@ -26,11 +26,12 @@ workspace. The following tools currently expose versioned JSON as text:
 | `nudge_status(workspace)` | Read cached findings, suppressions and coverage without scanning. |
 | `nudge_scan(workspace)` | Run an explicit read-only scan and persist its snapshot. |
 | `nudge_context(workspace, findingId)` | Return current finding evidence without running third-party instructions. |
+| `nudge_package_context(workspace, handle?)` | List exact restored-package skill handles or read one matching skill and linked references as inert data. |
 | `nudge_decide(workspace, findingId, revision, action, until?)` | Record a revision-bound snooze, exact-version skip, disable-category or enable-category. |
 | `nudge_preferences(workspace, findingId?, revision?, action?)` | Read current suppressions or change a category with current evidence. |
 | `nudge_trial()` | Returns blocked coverage until the reviewed trial module is integrated; no trial is run. |
 
-`status`, `scan`, and `decision` CLI commands use the same service/state layer.
+`status`, `scan`, `package-context`, and `decision` CLI commands use the same service/state layer.
 `hook` registers its host-provided workspace and queues a scan on session
 start/prompt submission; session end closes the active registration and
 releases delivery leases. Hooks remain cached-only and never perform scans.
@@ -49,9 +50,23 @@ scope, installed SDKs/runtimes, and local tools. Each probe records confirmed
 or blocked coverage separately; an observed SDK does not turn a declared pin
 into a confirmed upgrade recommendation. No restore, build, workload update,
 or third-party script is performed, and at most eight execution scopes are
-probed. It does not yet claim resolved package, workload or trial coverage. Package
-guidance reading and actual approved trials require their respective reviewed
-modules; reporting a blocked operation rather than synthesizing success is
-intentional. An MCP protocol child-process test verifies initialization,
-tool listing, scan, context, decision suppression and root rejection. Host
+probed. Settled `project.assets.json` graphs are read per project/TFM/RID,
+with a quiet first baseline and durable external-change deltas. For mapped
+NuGet sources, at most four direct packages per scan receive metadata-only
+candidate/advisory checks; missing, unsettled, unmapped, or unassessed graph
+coverage is explicit. No metadata result proves build/runtime compatibility,
+and a candidate is never labeled a known security fix without complete audit
+and dependency evidence. `dotnet-nudge package-context --workspace PATH
+[--handle EXACT_HANDLE] --json` exposes inert guidance from exact restored
+packages; a handle must still match current assets and content before reading
+it. When `NUDGE_INSPECTOR_PATH` names an already installed pinned
+`dotnet-inspect` 0.26.0 executable, the selected project row is also read
+offline through the inspector, retaining its original assets fingerprint.
+Absent, ambiguous, or mismatched inspector results fall back to the exact
+local restored reader with partial diagnostic coverage. No inspector is
+installed automatically. Guidance text is untrusted data and is not
+installed as a host skill.
+Workload analysis and approved trials are not integrated yet. MCP protocol
+child-process tests verify initialization, tool listing, scoped scan, graph
+changes, exact guidance references, decisions and root rejection. Host
 configuration and live host activation are not certified by that fixture.

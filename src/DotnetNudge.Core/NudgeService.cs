@@ -31,7 +31,7 @@ public sealed class NudgeService(NudgeState state, string? owner = null, bool cl
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(90));
             var result = await new NudgeScanner(source).ScanAsync(root, deadline.Token,
-                probeInstalled: true);
+                probeInstalled: true, state: state);
             state.FinishScan(job, sessionOwner, result, null);
             return result;
         }
@@ -50,6 +50,10 @@ public sealed class NudgeService(NudgeState state, string? owner = null, bool cl
         var (repository, _) = WorkspaceDiscovery.Identities(root);
         return state.Decide(repository, WorkspaceDiscovery.ScopeId(root), id, revision, action, until);
     }
+
+    public Task<PackageContextReport> PackageContextAsync(string root, string? handle = null,
+        CancellationToken token = default) =>
+        PackageIntegration.ContextAsync(WorkspaceDiscovery.Discover(root), handle, token);
 
     public StatusReport Register(string root)
     {

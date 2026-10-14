@@ -17,7 +17,8 @@ public enum Priority { Critical, High, Medium, Low }
 public enum DecisionAction { Snooze, SkipVersion, DisableCategory, EnableCategory }
 
 public sealed record Evidence(string Type, string Uri, DateTimeOffset RetrievedAt);
-public sealed record FindingScope(string? Project, string? Framework, string? SdkScope);
+public sealed record FindingScope(string? Project, string? Framework, string? SdkScope,
+    string? RuntimeIdentifier = null, string? Source = null);
 public sealed record Finding(
     int SchemaVersion, string Id, string SubjectKey, string Revision, string Kind,
     Priority Priority, string? Current, string? Candidate, FindingScope Scope,

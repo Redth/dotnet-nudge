@@ -8,6 +8,7 @@ namespace DotnetNudge.Core;
 public sealed class NudgeState : IDisposable
 {
     const int StateSchemaVersion = 3;
+    public string DirectoryPath { get; }
     readonly SqliteConnection connection;
     readonly TimeProvider clock;
 
@@ -20,6 +21,7 @@ public sealed class NudgeState : IDisposable
 
     public NudgeState(string directory, TimeProvider? clock = null)
     {
+        DirectoryPath = Path.GetFullPath(directory);
         Directory.CreateDirectory(directory);
         this.clock = clock ?? TimeProvider.System;
         connection = new SqliteConnection(new SqliteConnectionStringBuilder

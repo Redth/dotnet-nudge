@@ -103,6 +103,16 @@ public sealed class NudgeTools(McpStateDirectory location)
         });
     }
 
+    [McpServerTool(Name = "nudge_package_context"), Description("List inert guidance handles from exact restored packages, or read one matching handle and its references.")]
+    public async Task<string> PackageContext(McpServer server, string workspace,
+        string? handle = null, CancellationToken cancellationToken = default)
+    {
+        var root = await RootAsync(server, workspace, cancellationToken);
+        return await WithServiceAsync(async service =>
+            JsonSerializer.Serialize(await service.PackageContextAsync(root, handle, cancellationToken),
+                Contract.Json));
+    }
+
     [McpServerTool(Name = "nudge_decide"), Description("Record a versioned snooze, skip or category preference.")]
     public async Task<string> Decide(McpServer server, string workspace, string findingId,
         string revision, string action, string? until = null, CancellationToken cancellationToken = default)
@@ -184,7 +194,7 @@ public sealed class ScanWorker(McpStateDirectory location, ILogger<ScanWorker> l
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
                 deadline.CancelAfter(TimeSpan.FromSeconds(90));
                 var report = await new NudgeScanner(source).ScanAsync(job.Root, deadline.Token,
-                    probeInstalled: true);
+                    probeInstalled: true, state: state);
                 state.FinishScan(job, owner, report, null);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

@@ -17,12 +17,14 @@ dependencies, under writable user data.
 `runtime-manifest.json` intentionally has no release artifacts until a real
 release is published.
 
-The engine exposes `version`, read-only `scan`/`status`, `doctor`, structured
+The engine exposes `version`, read-only `scan`/`status`/`package-context`, `doctor`, structured
 `decision`, and a local stdio `mcp` command. The plugin declares that server
 in portable `mcp.json` for Copilot CLI and native `.mcp.json` for Claude Code.
 It starts only after the self-contained engine is installed and its directory
 is on the host's `PATH`; plugin installation alone still cannot start the
-engine. No release is published yet. The trial module is not integrated, and
+engine. No release is published yet. Restored package graph changes, bounded
+mapped-source metadata and inert package guidance are integrated; the trial
+module is not integrated, and
 hook/schema validation does not prove end-to-end model delivery.
 
 For local source development, once the foundation source is present:

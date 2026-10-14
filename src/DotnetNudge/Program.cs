@@ -13,6 +13,7 @@ static async Task<int> Run(string[] args)
             mcp [--state-dir PATH]
             scan --workspace PATH [--state-dir PATH] --json
             status --workspace PATH [--state-dir PATH] --json
+            package-context --workspace PATH [--handle EXACT_HANDLE] [--state-dir PATH] --json
             decision --workspace PATH --finding ID --revision REV --action snooze|skip-version|disable-category|enable-category [--until TIMESTAMP] [--state-dir PATH] --json
             doctor [--workspace PATH] [--state-dir PATH] --json
             hook --host copilot|claude --event session-start|prompt-submit|post-tool-use|session-end [--state-dir PATH]
@@ -44,6 +45,7 @@ static async Task<int> Run(string[] args)
         var allowed = args[0] switch
         {
             "scan" or "status" => new[] { "--workspace", "--state-dir", "--json" },
+            "package-context" => ["--workspace", "--handle", "--state-dir", "--json"],
             "mcp" => ["--state-dir"],
             "decision" => ["--workspace", "--state-dir", "--json", "--finding", "--revision", "--action", "--until"],
             "doctor" => ["--workspace", "--state-dir", "--json"],
@@ -72,7 +74,7 @@ static async Task<int> Run(string[] args)
                 root is null ? null : WorkspaceDiscovery.ScopeId(root),
                 Environment.GetEnvironmentVariable("NUDGE_RELEASES_DIR") is null
                     ? ReleaseMetadata.IndexUrl : "local fixture",
-                "MCP worker available while host session is active; package graphs and trials require their modules."),
+                "MCP worker available while host session is active; restored package graphs and read-only probes are supported, trials await integration."),
                 Contract.Json));
             return 0;
         }
@@ -102,6 +104,9 @@ static async Task<int> Run(string[] args)
                 break;
             case "status":
                 result = service.Status(workspace);
+                break;
+            case "package-context":
+                result = await service.PackageContextAsync(workspace, options.GetValueOrDefault("--handle"));
                 break;
             case "decision":
                 if (!Enum.TryParse<DecisionAction>(Required("--action").Replace("-", ""), true, out var action))
