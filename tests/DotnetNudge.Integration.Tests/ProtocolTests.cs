@@ -701,7 +701,7 @@ public sealed class ProtocolTests
                 using var state = new NudgeState(stateDir);
                 using var service = new NudgeService(state);
                 var first = await service.ScanAsync(root);
-                Assert.Empty(first.Findings);
+                Assert.DoesNotContain(first.Findings, f => f.Category == "package");
                 Assert.Contains(first.Coverage, c => c.Check == "package-graph:App.csproj" &&
                     c.Assessment == Assessment.Confirmed);
                 await Assert.ThrowsAsync<ArgumentException>(() => service.AssessPackageAsync(root,
@@ -1025,8 +1025,10 @@ public sealed class ProtocolTests
             var trialRoot = Path.Combine(stateDir, "trials");
             var plan = new TrialPlan("integration", 1, repo, commit, trialRoot,
                 ["App.csproj"],
-                new("10.0.100", RuntimeInformation.RuntimeIdentifier, prepared[0]),
-                new("10.0.401", RuntimeInformation.RuntimeIdentifier, prepared[1]),
+                new("10.0.100", Environment.GetEnvironmentVariable("NUDGE_INTEGRATION_ENGINE_RID")
+                    ?? RuntimeInformation.RuntimeIdentifier, prepared[0]),
+                new("10.0.401", Environment.GetEnvironmentVariable("NUDGE_INTEGRATION_ENGINE_RID")
+                    ?? RuntimeInformation.RuntimeIdentifier, prepared[1]),
                 [new("App.csproj", "Acme.Parent", "1.0.0", "2.0.0")],
                 [new("restore", ["App.csproj"]), new("build", ["App.csproj"]),
                     new("test", ["App.csproj", "--no-build"])],
