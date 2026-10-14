@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "\"${PLUGIN_ROOT}/scripts/hook.sh\" copilot session-start",
+        "powershell": "& \"$env:PLUGIN_ROOT/scripts/hook.ps1\" copilot session-start",
+        "timeoutSec": 5
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "\"${PLUGIN_ROOT}/scripts/hook.sh\" copilot prompt-submit",
+        "powershell": "& \"$env:PLUGIN_ROOT/scripts/hook.ps1\" copilot prompt-submit",
+        "timeoutSec": 5
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "\"${PLUGIN_ROOT}/scripts/hook.sh\" copilot post-tool-use",
+        "powershell": "& \"$env:PLUGIN_ROOT/scripts/hook.ps1\" copilot post-tool-use",
+        "timeoutSec": 5
+      }
+    ],
+    "sessionEnd": [
+      {
+        "type": "command",
+        "bash": "\"${PLUGIN_ROOT}/scripts/hook.sh\" copilot session-end",
+        "powershell": "& \"$env:PLUGIN_ROOT/scripts/hook.ps1\" copilot session-end",
+        "timeoutSec": 5
+      }
+    ]
+  }
+}

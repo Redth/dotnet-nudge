@@ -1,0 +1,35 @@
+name: Plugin contracts
+
+on:
+  push:
+    paths:
+      - ".claude-plugin/**"
+      - "plugins/dotnet-nudge/**"
+      - "tests/plugin-contracts/**"
+      - "docs/plugin-development.md"
+      - "README.md"
+      - ".github/workflows/plugin-contracts.yml"
+  pull_request:
+    paths:
+      - ".claude-plugin/**"
+      - "plugins/dotnet-nudge/**"
+      - "tests/plugin-contracts/**"
+      - "docs/plugin-development.md"
+      - "README.md"
+      - ".github/workflows/plugin-contracts.yml"
+  workflow_dispatch:
+
+jobs:
+  contracts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Run offline plugin contract tests
+        run: python -m unittest discover -s tests/plugin-contracts -v
