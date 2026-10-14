@@ -7,6 +7,7 @@ Build with a stable .NET 10 SDK. `global.json` requests at least 10.0.100 and
 dotnet build DotnetNudge.sln
 dotnet test tests/DotnetNudge.Tests/DotnetNudge.Tests.csproj
 dotnet test tests/DotnetNudge.Integration.Tests/DotnetNudge.Integration.Tests.csproj
+NUDGE_TEST_ROOT=/path/to/disposable/artifacts dotnet run --project tests/DotnetNudge.Trials.Tests/DotnetNudge.Trials.Tests.csproj
 dotnet publish src/DotnetNudge/DotnetNudge.csproj -c Release -r osx-arm64 --self-contained true -o publish
 ./publish/dotnet-nudge version
 ```
@@ -31,6 +32,8 @@ scan --workspace PATH [--state-dir PATH] --json
 status --workspace PATH [--state-dir PATH] --json
 package-context --workspace PATH [--handle EXACT_HANDLE] [--state-dir PATH] --json
 package-assess --workspace PATH --project RELATIVE_PROJECT --framework TFM --package ID --sources NAME[,NAME...] --approve-metadata [--rid RID] [--state-dir PATH] --json
+toolchains --workspace PATH [--state-dir PATH] --json
+trial root|propose|approve|execute|status|cancel|cleanup --workspace PATH [--plan ABSOLUTE_FILE] [--id ID] [--revision N] [--state-dir PATH] --json
 preferences --workspace PATH [--enable-category NAME] [--state-dir PATH] --json
 decision --workspace PATH --finding ID --revision REV --action snooze|skip-version|disable-category|enable-category [--until RFC3339] [--state-dir PATH] --json
 doctor [--workspace PATH] [--state-dir PATH] --json
@@ -117,7 +120,12 @@ MCP process is lazy/unavailable, and explicit `scan` completes them. See
 `docs/integration.md` for the MCP tool contract. No host has been end-to-end
 certified by the protocol fixture alone.
 
-Not implemented yet: workload/MAUI servicing and actual trials. Package
+Offline workload/host analysis uses optional scoped `.dotnet-nudge/toolchains.json`
+evidence; `toolchains --workspace PATH --json` inspects it and locally observed
+runtimes. `trial root|propose|approve|execute|status|cancel|cleanup --workspace PATH
+[--plan ABSOLUTE_FILE] [--id ID] [--revision N] --json` manages approved
+baseline/candidate worktrees. See `docs/integration.md` and
+`docs/upgrade-trials.md` for approval, isolation and platform limits. Package
 feed checks remain partial without mapped source and complete audit evidence;
 restored graphs are observed without changing projects. XML project/config inventory is declared
 data only and does not represent evaluated MSBuild properties.

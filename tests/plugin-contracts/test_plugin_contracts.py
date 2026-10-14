@@ -187,7 +187,9 @@ class PluginManifestTests(unittest.TestCase):
             decision_skill,
         )
         trial_skill = (plugin_dir / "skills/nudge-trial/SKILL.md").read_text(encoding="utf-8")
-        self.assertNotIn("dotnet-nudge trial", trial_skill)
+        self.assertIn("dotnet-nudge trial root --workspace PATH --json", trial_skill)
+        self.assertIn("exact revision", trial_skill)
+        self.assertIn("not an OS sandbox", trial_skill)
 
     def test_one_hook_configuration_and_exact_host_event_mapping(self) -> None:
         copilot = read_json(PLUGIN / "com.github.copilot/hooks/hooks.json")

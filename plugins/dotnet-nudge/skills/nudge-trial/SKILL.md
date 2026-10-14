@@ -1,6 +1,6 @@
 ---
 name: nudge-trial
-description: Explain the proposed isolated .NET upgrade-trial boundary without claiming an unavailable trial runner.
+description: Review exact-approved .NET upgrade trials and their evidence and isolation limits.
 ---
 
 # Nudge trial
@@ -12,7 +12,7 @@ description: Explain the proposed isolated .NET upgrade-trial boundary without c
 
 ## User approval
 
-- A trial would restore, build, test, or otherwise execute project code in an isolated environment. Do not start one without approval of the exact project, candidate, commands, environment, and budget.
+- A trial restores, builds, tests, or otherwise executes trusted project code in separate Git worktrees. Git worktrees are not an OS sandbox. Do not start one without approval of the exact project, candidate, commands, environment, and budget.
 - Approval for an assessment does not authorize a trial or changes to the original checkout.
 
 ## Structured decisions
@@ -22,5 +22,5 @@ description: Explain the proposed isolated .NET upgrade-trial boundary without c
 
 ## Supported and not yet implemented
 
-- CLI and MCP report current findings; `nudge_trial` explicitly reports blocked coverage until the reviewed trial runner is integrated.
-- Do not invoke a guessed `trial` command, simulate trial completion, or claim that schema validation proves isolated execution works.
+- Obtain the engine-owned root with `dotnet-nudge trial root --workspace PATH --json` or `nudge_trial` operation `root`. Construct a complete plan matching `docs/upgrade-trials.md`, propose it, obtain explicit human approval of its exact revision, and only then execute. Status includes baseline/candidate evidence and actual test counts. Failed, missing or zero tests are not a pass.
+- CLI operations are `trial propose --plan ABSOLUTE_FILE`, `approve|execute --id ID --revision N`, and `status|cancel|cleanup --id ID`, each with `--workspace PATH --json`. MCP uses `nudge_trial(workspace, operation, id?, revision?, planJson?)`. Dirty candidate worktrees refuse cleanup. A separate CLI process cannot cancel an active execution in another process; Windows trials and workload installers are unsupported.

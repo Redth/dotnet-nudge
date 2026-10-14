@@ -19,6 +19,7 @@ public static class PackageIntegration
 {
     const int MaxGraphs = 8;
     const int MaxAssessments = 4;
+    const int MaxAuditScopes = 512;
     const int MaxGuidancePackages = 16;
 
     public static async Task<PackageScanResult> ScanAsync(WorkspaceInventory workspace,
@@ -28,6 +29,8 @@ public static class PackageIntegration
         var coverage = new List<Coverage>();
         var reader = new PackageGraphReader();
         var assessed = 0;
+        var audited = 0;
+        var auditOmitted = 0;
         var omitted = 0;
         if (workspace.Projects.Count == 0)
             coverage.Add(new("package-graph", Assessment.Unknown,
@@ -85,6 +88,7 @@ public static class PackageIntegration
             var direct = graph.Packages.Where(n => n.Direct)
                 .DistinctBy(n => (n.Framework, n.RuntimeIdentifier, n.Id))
                 .ToArray();
+            var assessedScopes = new HashSet<(string Framework, string? Rid, string Id)>();
             var skipped = 0;
             foreach (var node in direct)
             {
@@ -102,6 +106,7 @@ public static class PackageIntegration
                     continue;
                 }
                 assessed++;
+                assessedScopes.Add((node.Framework, node.RuntimeIdentifier, node.Id));
                 var assessment = await intelligence.AssessAsync(node, graph, cancellationToken: token);
                 coverage.Add(new(feedCheck, Map(assessment.Status),
                     assessment.Diagnostics.Count == 0
@@ -140,6 +145,38 @@ public static class PackageIntegration
                     candidate?.Kind == "major" ? "review-major-package-trial" :
                     "review-package-metadata-and-trial", true, "package"));
             }
+            var auditNodes = graph.Packages.DistinctBy(node =>
+                    (node.Framework, node.RuntimeIdentifier, node.Id))
+                .Where(node => !assessedScopes.Contains((node.Framework, node.RuntimeIdentifier, node.Id)))
+                .ToArray();
+            var auditCapacity = Math.Max(0, MaxAuditScopes - audited);
+            foreach (var node in auditNodes.Take(auditCapacity))
+            {
+                token.ThrowIfCancellationRequested();
+                audited++;
+                var audit = await intelligence.AuditOnlyAsync(node, graph, token);
+                coverage.Add(new($"package-audit:{project}:{node.Framework}:{node.RuntimeIdentifier ?? "any"}:{node.Id}",
+                    Map(audit.Status), audit.Diagnostics.Count == 0
+                        ? "Resolved package checked against complete permitted advisory partitions; candidate versions not checked."
+                        : string.Join("; ", audit.Diagnostics)));
+                if (audit.Advisories.Count == 0) continue;
+                var subject = Subject(workspace, node);
+                findings.Add(new(Contract.Version, "package:" + subject, subject,
+                    Revision(subject, audit.EvidenceRevision, graph.Fingerprint),
+                    "package-advisory",
+                    audit.Advisories.Max(a => a.Severity) switch
+                    {
+                        >= 3 => Priority.Critical, 2 => Priority.High, 1 => Priority.Medium,
+                        _ => Priority.Low
+                    },
+                    node.Version.ToNormalizedString(), null, Scope(workspace, node),
+                    Map(audit.Status),
+                    [new Evidence("settled-assets", new Uri(graph.AssetsPath).AbsoluteUri, audit.RetrievedAt),
+                        .. audit.Advisories.Select(a =>
+                            new Evidence("nuget-advisory", a.Url, audit.RetrievedAt))],
+                    "review-advisory-and-direct-parent-trial-no-known-fix", true, "package"));
+            }
+            auditOmitted += Math.Max(0, auditNodes.Length - auditCapacity);
             if (skipped > 0)
             {
                 omitted += skipped;
@@ -147,9 +184,10 @@ public static class PackageIntegration
                     $"{skipped} mapped direct package scopes were not assessed after the {MaxAssessments}-scope limit."));
             }
         }
-        if (workspace.Projects.Count > MaxGraphs || omitted > 0)
+        if (workspace.Projects.Count > MaxGraphs || omitted > 0 || auditOmitted > 0)
             coverage.Add(new("package-scan-limit", Assessment.Partial,
-                $"Read at most {MaxGraphs} project graphs; {omitted} mapped direct scopes were not assessed."));
+                $"Read at most {MaxGraphs} project graphs; {omitted} mapped direct candidate scopes and " +
+                $"{auditOmitted} resolved advisory scopes were not assessed."));
         return new(findings, coverage);
     }
 

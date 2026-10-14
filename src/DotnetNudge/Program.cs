@@ -1,6 +1,7 @@
 using System.Text.Json;
 using DotnetNudge;
 using DotnetNudge.Core;
+using DotnetNudge.Trials;
 
 return await Run(args);
 
@@ -15,6 +16,8 @@ static async Task<int> Run(string[] args)
             status --workspace PATH [--state-dir PATH] --json
             package-context --workspace PATH [--handle EXACT_HANDLE] [--state-dir PATH] --json
             package-assess --workspace PATH --project RELATIVE_PROJECT --framework TFM --package ID --sources NAME[,NAME...] --approve-metadata [--rid RID] [--state-dir PATH] --json
+            toolchains --workspace PATH [--state-dir PATH] --json
+            trial root|propose|approve|execute|status|cancel|cleanup --workspace PATH [--plan FILE] [--id ID] [--revision N] [--state-dir PATH] --json
             preferences --workspace PATH [--enable-category NAME] [--state-dir PATH] --json
             decision --workspace PATH --finding ID --revision REV --action snooze|skip-version|disable-category|enable-category [--until TIMESTAMP] [--state-dir PATH] --json
             doctor [--workspace PATH] [--state-dir PATH] --json
@@ -31,8 +34,11 @@ static async Task<int> Run(string[] args)
     var hook = args[0] == "hook";
     try
     {
+        var trialOperation = args[0] == "trial"
+            ? args.Length > 1 ? args[1] : throw new ArgumentException("Trial operation is required.")
+            : null;
         var options = new Dictionary<string, string>(StringComparer.Ordinal);
-        for (var i = 1; i < args.Length; i++)
+        for (var i = trialOperation is null ? 1 : 2; i < args.Length; i++)
         {
             if (args[i] is "--json" or "--approve-metadata")
             {
@@ -46,10 +52,18 @@ static async Task<int> Run(string[] args)
         }
         var allowed = args[0] switch
         {
-            "scan" or "status" => new[] { "--workspace", "--state-dir", "--json" },
+            "scan" or "status" or "toolchains" => new[] { "--workspace", "--state-dir", "--json" },
             "package-context" => ["--workspace", "--handle", "--state-dir", "--json"],
             "package-assess" => ["--workspace", "--project", "--framework", "--package",
                 "--sources", "--approve-metadata", "--rid", "--state-dir", "--json"],
+            "trial" => trialOperation switch
+            {
+                "root" => ["--workspace", "--state-dir", "--json"],
+                "propose" => ["--workspace", "--plan", "--state-dir", "--json"],
+                "approve" or "execute" => ["--workspace", "--id", "--revision", "--state-dir", "--json"],
+                "status" or "cancel" or "cleanup" => ["--workspace", "--id", "--state-dir", "--json"],
+                _ => throw new ArgumentException("Unknown trial operation.")
+            },
             "preferences" => ["--workspace", "--enable-category", "--state-dir", "--json"],
             "mcp" => ["--state-dir"],
             "decision" => ["--workspace", "--state-dir", "--json", "--finding", "--revision", "--action", "--until"],
@@ -120,6 +134,9 @@ static async Task<int> Run(string[] args)
             case "status":
                 result = service.Status(workspace);
                 break;
+            case "toolchains":
+                result = await service.ToolchainsAsync(workspace);
+                break;
             case "package-context":
                 result = await service.PackageContextAsync(workspace, options.GetValueOrDefault("--handle"));
                 break;
@@ -129,6 +146,37 @@ static async Task<int> Run(string[] args)
                     Required("--sources").Split(',', StringSplitOptions.TrimEntries)
                         .ToHashSet(StringComparer.OrdinalIgnoreCase),
                     options.ContainsKey("--approve-metadata"));
+                break;
+            case "trial":
+                int Revision() => int.TryParse(Required("--revision"), out var value) && value > 0
+                    ? value : throw new ArgumentException("Trial revision must be a positive integer.");
+                async Task<TrialStatusReport> Execute()
+                {
+                    using var cancellation = new CancellationTokenSource();
+                    ConsoleCancelEventHandler handler = (_, signal) =>
+                    {
+                        signal.Cancel = true;
+                        cancellation.Cancel();
+                    };
+                    Console.CancelKeyPress += handler;
+                    try
+                    {
+                        return await service.ExecuteTrialAsync(workspace, Required("--id"),
+                            Revision(), cancellation.Token);
+                    }
+                    finally { Console.CancelKeyPress -= handler; }
+                }
+                result = trialOperation switch
+                {
+                    "root" => new { schemaVersion = Contract.Version, trialRoot = service.TrialRoot },
+                    "propose" => service.ProposeTrial(workspace, ReadPlan(Required("--plan"))),
+                    "approve" => service.ApproveTrial(workspace, Required("--id"), Revision()),
+                    "execute" => await Execute(),
+                    "status" => service.TrialStatus(workspace, Required("--id")),
+                    "cancel" => service.CancelTrial(workspace, Required("--id")),
+                    "cleanup" => await service.CleanupTrialAsync(workspace, Required("--id")),
+                    _ => throw new ArgumentException("Unknown trial operation.")
+                };
                 break;
             case "preferences":
                 result = options.TryGetValue("--enable-category", out var category)
@@ -156,7 +204,8 @@ static async Task<int> Run(string[] args)
         return 0;
     }
     catch (Exception ex) when (ex is ArgumentException or IOException or InvalidDataException or JsonException or
-        InvalidOperationException or Microsoft.Data.Sqlite.SqliteException or UnauthorizedAccessException)
+        InvalidOperationException or Microsoft.Data.Sqlite.SqliteException or UnauthorizedAccessException
+        or TrialException or OperationCanceledException or System.ComponentModel.Win32Exception)
     {
         var message = ex.Message.Length > 500 ? ex.Message[..500] : ex.Message;
         Console.Error.WriteLine($"dotnet-nudge: {message}");
@@ -165,5 +214,15 @@ static async Task<int> Run(string[] args)
                 error = message }));
         else if (hook) Console.WriteLine("{}");
         return hook ? 0 : 2;
+    }
+
+    static TrialPlan ReadPlan(string path)
+    {
+        if (!Path.IsPathFullyQualified(path))
+            throw new ArgumentException("Trial plan file must be an absolute path.");
+        var text = DotnetNudge.Toolchains.SafeMetadataReader.ReadFile(
+            Path.GetDirectoryName(path)!, Path.GetFileName(path), 1024 * 1024);
+        return JsonSerializer.Deserialize<TrialPlan>(text, Contract.Json)
+            ?? throw new InvalidDataException("Trial plan cannot be null.");
     }
 }

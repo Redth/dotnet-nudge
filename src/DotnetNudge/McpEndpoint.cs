@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Collections.Concurrent;
 using System.Text.Json;
 using DotnetNudge.Core;
+using DotnetNudge.Trials;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -36,6 +37,8 @@ public sealed class McpStateDirectory(string path)
     public string Path { get; } = path;
     public string Owner { get; } = "mcp:" + Guid.NewGuid().ToString("N");
     public ConcurrentDictionary<string, byte> Registered { get; } = new(StringComparer.Ordinal);
+    public TrialRunner Trials { get; } = new(new TrialStore(
+        System.IO.Path.Combine(path, "trials")));
 }
 
 [McpServerToolType]
@@ -44,7 +47,8 @@ public sealed class NudgeTools(McpStateDirectory location)
     async Task<string> WithServiceAsync(Func<NudgeService, Task<string>> operation)
     {
         using var state = new NudgeState(location.Path);
-        using var service = new NudgeService(state, location.Owner, closeOnDispose: false);
+        using var service = new NudgeService(state, location.Owner, closeOnDispose: false,
+            runner: location.Trials);
         return await operation(service);
     }
 
@@ -128,6 +132,15 @@ public sealed class NudgeTools(McpStateDirectory location)
                 cancellationToken), Contract.Json));
     }
 
+    [McpServerTool(Name = "nudge_toolchains"), Description("Inspect offline workload/host evidence and observed local runtime servicing without installing SDKs or workloads.")]
+    public async Task<string> Toolchains(McpServer server, string workspace,
+        CancellationToken cancellationToken)
+    {
+        var root = await RootAsync(server, workspace, cancellationToken);
+        return await WithServiceAsync(async service =>
+            JsonSerializer.Serialize(await service.ToolchainsAsync(root, cancellationToken), Contract.Json));
+    }
+
     [McpServerTool(Name = "nudge_decide"), Description("Record a versioned snooze, skip or category preference.")]
     public async Task<string> Decide(McpServer server, string workspace, string findingId,
         string revision, string action, string? until = null, CancellationToken cancellationToken = default)
@@ -164,12 +177,37 @@ public sealed class NudgeTools(McpStateDirectory location)
         });
     }
 
-    [McpServerTool(Name = "nudge_trial"), Description("Trial operations require an approved plan and the trial module.")]
-    public string Trial() => JsonSerializer.Serialize(new
+    [McpServerTool(Name = "nudge_trial"), Description("Read or manage an isolated trial. Propose requires a complete exact plan; approve requires explicit human approval of its exact revision; execute requires that persisted approval. No source checkout, global SDK, push or PR is changed.")]
+    public async Task<string> Trial(McpServer server, string workspace, string operation,
+        string? id = null, int? revision = null, string? planJson = null,
+        CancellationToken cancellationToken = default)
     {
-        schemaVersion = Contract.Version, assessment = Assessment.Blocked,
-        detail = "Trial module is not installed; no changes were made."
-    }, Contract.Json);
+        var root = await RootAsync(server, workspace, cancellationToken);
+        return await WithServiceAsync(async service =>
+        {
+            TrialPlan Plan()
+            {
+                if (planJson is null || System.Text.Encoding.UTF8.GetByteCount(planJson) > 1024 * 1024)
+                    throw new McpException("An exact trial plan JSON of at most 1 MiB is required.");
+                return JsonSerializer.Deserialize<TrialPlan>(planJson, Contract.Json)
+                    ?? throw new McpException("Trial plan cannot be null.");
+            }
+            string Id() => id ?? throw new McpException("Trial id is required.");
+            int Revision() => revision ?? throw new McpException("Exact plan revision is required.");
+            object result = operation switch
+            {
+                "root" => new { schemaVersion = Contract.Version, trialRoot = service.TrialRoot },
+                "propose" => service.ProposeTrial(root, Plan()),
+                "approve" => service.ApproveTrial(root, Id(), Revision()),
+                "execute" => await service.ExecuteTrialAsync(root, Id(), Revision(), cancellationToken),
+                "status" => service.TrialStatus(root, Id()),
+                "cancel" => service.CancelTrial(root, Id()),
+                "cleanup" => await service.CleanupTrialAsync(root, Id()),
+                _ => throw new McpException("Unknown trial operation.")
+            };
+            return JsonSerializer.Serialize(result, Contract.Json);
+        });
+    }
 
     [McpServerTool(Name = "nudge_register"), Description("Register an explicit workspace root and queue a durable read-only scan.")]
     public async Task<string> Register(McpServer server, string workspace, CancellationToken cancellationToken)

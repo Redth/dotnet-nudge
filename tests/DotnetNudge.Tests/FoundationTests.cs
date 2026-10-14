@@ -248,6 +248,9 @@ public sealed class FoundationTests
         Assert.Contains(aFinding.Id, HookAdapter.Handle("copilot", "session-start", aPayload, state));
         Assert.Equal("{}", HookAdapter.Handle("claude", "session-start", bPayload, state));
         clock.Now = clock.Now.AddDays(8);
+        Assert.Equal("{}", HookAdapter.Handle("claude", "session-start", bPayload, state));
+        state.FinishScan(state.LeaseScan("refresh-b", right.Workspace.WorkspaceId)!, "refresh-b",
+            right with { ScannedAt = clock.Now }, null, NudgeState.WorkspaceFingerprint(b));
         Assert.Contains(bFinding.Id, HookAdapter.Handle("claude", "session-start", bPayload, state));
         state.Decide(left.Workspace.RepositoryId, left.Workspace.WorkspaceId,
             aFinding.Id, aFinding.Revision, DecisionAction.SkipVersion, null);

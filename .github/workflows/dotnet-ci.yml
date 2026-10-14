@@ -26,10 +26,22 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Build
         run: dotnet build DotnetNudge.sln --configuration Release
       - name: Test
+        env:
+          NUDGE_INTEGRATION_TEST_ROOT: ${{ runner.temp }}
         run: dotnet test DotnetNudge.sln --configuration Release --no-build
+      - name: Plugin contracts
+        run: python -m unittest discover -s tests/plugin-contracts -q
+      - name: Offline approved trial fixtures
+        if: runner.os != 'Windows'
+        env:
+          NUDGE_TEST_ROOT: ${{ runner.temp }}
+        run: dotnet run --project tests/DotnetNudge.Trials.Tests/DotnetNudge.Trials.Tests.csproj --configuration Release
       - name: Publish self-contained
         run: dotnet publish src/DotnetNudge/DotnetNudge.csproj --configuration Release --runtime ${{ matrix.rid }} --self-contained true --output publish
       - name: Smoke
@@ -38,4 +50,4 @@ jobs:
       - name: Verify published MCP protocol
         env:
           NUDGE_INTEGRATION_ENGINE_PATH: ${{ github.workspace }}/publish/${{ matrix.executable }}
-        run: dotnet test tests/DotnetNudge.Integration.Tests/DotnetNudge.Integration.Tests.csproj --configuration Release --no-build --filter FullyQualifiedName~ChildProcessInitializesListsToolsScansAndDecides
+        run: dotnet test tests/DotnetNudge.Integration.Tests/DotnetNudge.Integration.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~ChildProcessInitializesListsToolsScansAndDecides|FullyQualifiedName~McpApprovedIsolatedTrialKeepsOriginalAndRefusesDirtyCleanup"

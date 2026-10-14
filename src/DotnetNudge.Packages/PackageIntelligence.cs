@@ -205,6 +205,38 @@ public sealed class PackageIntelligence
             advisories, distinct, fix, paths, diagnostics) { RetrievedAt = _now() };
     }
 
+    public async Task<PackageAssessment> AuditOnlyAsync(PackageNode package, PackageGraph graph,
+        CancellationToken cancellationToken = default)
+    {
+        if (graph.Status != EvidenceStatus.Complete)
+            return new(package, EvidenceStatus.Unknown, [], [], null, [],
+                [graph.Diagnostic ?? "Graph unavailable"]) { RetrievedAt = _now() };
+        var sources = _policy.AuditSources.Count > 0
+            ? _policy.AuditSources : _policy.Allowed(package.Id);
+        var diagnostics = new List<string>();
+        var advisories = new List<PackageAdvisory>();
+        if (sources.Count == 0)
+            diagnostics.Add("No permitted mapped source or configured audit source; advisory coverage is unknown.");
+        foreach (var source in sources)
+        {
+            try
+            {
+                foreach (var partition in await AdvisoryPartitions(source, cancellationToken))
+                    if (partition.TryGetValue(package.Id, out var entries))
+                        foreach (var entry in entries)
+                            if (entry.Versions.Satisfies(package.Version))
+                                advisories.Add(new(entry.Url.ToString(), (int)entry.Severity,
+                                    entry.Versions.ToString(), source.Name));
+            }
+            catch (Exception ex) when (FeedFailure(ex))
+            {
+                diagnostics.Add($"Audit source {source.Name} unavailable ({ex.GetType().Name}); advisory coverage is incomplete.");
+            }
+        }
+        return new(package, diagnostics.Count == 0 ? EvidenceStatus.Complete : EvidenceStatus.Partial,
+            advisories, [], null, [], diagnostics) { RetrievedAt = _now() };
+    }
+
     private async Task<IReadOnlyList<RemediationPath>> ParentOptions(IReadOnlyList<RemediationPath> paths,
         PackageNode target, NuGetVersion fixedVersion, PackageGraph graph,
         IReadOnlySet<string>? approvedSources, List<string> diagnostics, CancellationToken token)

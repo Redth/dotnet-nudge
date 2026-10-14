@@ -8,6 +8,7 @@ namespace DotnetNudge.Core;
 public sealed class NudgeState : IDisposable
 {
     const int StateSchemaVersion = 3;
+    const long MaintenanceRefreshSeconds = 6 * 60 * 60;
     public string DirectoryPath { get; }
     readonly SqliteConnection connection;
     readonly TimeProvider clock;
@@ -583,11 +584,14 @@ public sealed class NudgeState : IDisposable
             SELECT $s,$now,'pending',1 WHERE NOT EXISTS (
               SELECT 1 FROM workspace_snapshots snapshot
               JOIN workspace_registration registration ON registration.workspace=snapshot.workspace
-              WHERE snapshot.workspace=$s AND registration.fingerprint IS NOT NULL)
+              WHERE snapshot.workspace=$s AND registration.fingerprint IS NOT NULL
+                AND snapshot.scanned>$due)
             ON CONFLICT(workspace) DO UPDATE SET stale=1
             """;
         command.Parameters.AddWithValue("$s", workspace);
-        command.Parameters.AddWithValue("$now", clock.GetUtcNow().ToUnixTimeSeconds());
+        var now = clock.GetUtcNow().ToUnixTimeSeconds();
+        command.Parameters.AddWithValue("$now", now);
+        command.Parameters.AddWithValue("$due", now - MaintenanceRefreshSeconds);
         command.ExecuteNonQuery();
     }
 
@@ -612,20 +616,30 @@ public sealed class NudgeState : IDisposable
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT workspace,root,fingerprint FROM workspace_registration r WHERE EXISTS
+            SELECT r.workspace,r.root,r.fingerprint,snapshot.scanned
+            FROM workspace_registration r
+            LEFT JOIN workspace_snapshots snapshot ON snapshot.workspace=r.workspace
+            WHERE EXISTS
             (SELECT 1 FROM workspace_sessions s WHERE s.workspace=r.workspace AND s.active_until>$now)
             """;
         command.Parameters.AddWithValue("$now", clock.GetUtcNow().ToUnixTimeSeconds());
-        var registered = new List<(string Workspace, string Root, string? Fingerprint)>();
+        var registered = new List<(string Workspace, string Root, string? Fingerprint, long? Scanned)>();
         using (var reader = command.ExecuteReader())
             while (reader.Read())
                 registered.Add((reader.GetString(0), reader.GetString(1),
-                    reader.IsDBNull(2) ? null : reader.GetString(2)));
-        foreach (var (workspace, root, previous) in registered)
+                    reader.IsDBNull(2) ? null : reader.GetString(2),
+                    reader.IsDBNull(3) ? null : reader.GetInt64(3)));
+        foreach (var (workspace, root, previous, scanned) in registered)
         {
             if (!Directory.Exists(root) || WorkspaceDiscovery.ScopeId(root) != workspace) continue;
             var current = WorkspaceFingerprint(root);
-            if (current == previous) continue;
+            if (current == previous)
+            {
+                if (scanned is not null &&
+                    scanned <= clock.GetUtcNow().ToUnixTimeSeconds() - MaintenanceRefreshSeconds)
+                    QueueScan(workspace);
+                continue;
+            }
             using var transaction = connection.BeginTransaction();
             command.Transaction = transaction;
             command.Parameters.Clear();
@@ -669,6 +683,7 @@ public sealed class NudgeState : IDisposable
                     !(name is "global.json" or "project.assets.json" or "packages.lock.json"
                     or "Directory.Packages.props" or "NuGet.Config" or "nuget.config"
                     or "dotnet-tools.json" or "Directory.Build.props" or "Directory.Build.targets"
+                    or "toolchains.json"
                     or "HEAD" or "index"
                     || name.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)
                     || name.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase)

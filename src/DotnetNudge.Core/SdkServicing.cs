@@ -170,6 +170,7 @@ public static class SdkServicing
                     var result = await source.ReadAsync(uri, cancellationToken);
                     using var releases = JsonDocument.Parse(result.Body);
                     var available = new List<NuGetVersion>();
+                    var securityVersions = new HashSet<string>(StringComparer.Ordinal);
                     var malformed = false;
                     foreach (var release in RequiredArray(releases.RootElement, "releases").EnumerateArray())
                     {
@@ -178,21 +179,26 @@ public static class SdkServicing
                             malformed = true;
                             continue;
                         }
-                        if (release.TryGetProperty("sdk", out var sdk)) Add(sdk);
+                        var security = release.TryGetProperty("security", out var flag) &&
+                            flag.ValueKind == JsonValueKind.True;
+                        if (release.TryGetProperty("sdk", out var sdk)) Add(sdk, security);
                         if (release.TryGetProperty("sdks", out var sdks))
                         {
                             if (sdks.ValueKind == JsonValueKind.Array)
-                                foreach (var entry in sdks.EnumerateArray()) Add(entry);
+                                foreach (var entry in sdks.EnumerateArray()) Add(entry, security);
                             else malformed = true;
                         }
                     }
-                    void Add(JsonElement sdk)
+                    void Add(JsonElement sdk, bool security)
                     {
                         if (sdk.ValueKind == JsonValueKind.Object &&
                             sdk.TryGetProperty("version", out var version) &&
                             version.ValueKind == JsonValueKind.String &&
                             NuGetVersion.TryParse(version.GetString(), out var parsed))
+                        {
                             available.Add(parsed);
+                            if (security) securityVersions.Add(parsed.ToNormalizedString());
+                        }
                         else malformed = true;
                     }
                     if (available.Count == 0)
@@ -216,22 +222,28 @@ public static class SdkServicing
                     }
                     var subject = $"sdk:{WorkspaceDiscovery.SdkScopeKey(workspace.Root, declaration.Scope)}:" +
                         $"{channel}:{FeatureBand(pinned)}";
+                    var securityRelease = securityVersions.Contains(candidate.ToNormalizedString());
                     var revision = Convert.ToHexString(SHA256.HashData(
-                        Encoding.UTF8.GetBytes($"{subject}|{candidate.ToNormalizedString()}")))
+                        Encoding.UTF8.GetBytes($"{subject}|{candidate.ToNormalizedString()}|{securityRelease}")))
                         .ToLowerInvariant()[..16];
                     findings.Add(new(Contract.Version, subject, subject, revision, "sdk-servicing",
-                        Priority.Medium, pinned.ToNormalizedString(), candidate.ToNormalizedString(),
+                        securityRelease ? Priority.High : Priority.Medium,
+                        pinned.ToNormalizedString(), candidate.ToNormalizedString(),
                         new(null, null, declaration.Scope),
                         indexFreshness == Assessment.Stale || result.Freshness == Assessment.Stale
                             ? Assessment.Stale : Assessment.Partial,
-                        [new("dotnet-release-metadata", uri,
+                        [new(securityRelease ? "official-security-release" : "dotnet-release-metadata", uri,
                             (source as ReleaseMetadata)?.LastRetrieved(uri) ??
                             (clock ?? TimeProvider.System).GetUtcNow())],
-                        "review-sdk-pin-and-effective-selection", true, "sdk"));
+                        securityRelease ? "review-security-release-and-effective-sdk-selection" :
+                            "review-sdk-pin-and-effective-selection", true, "sdk"));
                     coverage.Add(new("sdk:" + declaration.Scope,
                         indexFreshness == Assessment.Stale || result.Freshness == Assessment.Stale
                             ? Assessment.Stale : Assessment.Partial,
-                        "A newer SDK exists in the declared feature band; review installed/effective probe coverage separately. " +
+                        (securityRelease
+                            ? "Candidate SDK is listed in a security release; CVE applicability to this project is not established. "
+                            : "A newer SDK exists in the declared feature band. ") +
+                        "Review installed/effective probe coverage separately. " +
                         $"Declared policy: rollForward={declaration.RollForward ?? "(default)"}, " +
                         $"allowPrerelease={declaration.AllowPrerelease?.ToString() ?? "(host-dependent; previews excluded)"}, " +
                         $"paths={string.Join(",", declaration.Paths)}." +
@@ -240,6 +252,73 @@ public static class SdkServicing
                 catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or InvalidOperationException)
                 {
                     coverage.Add(new("sdk:" + declaration.Scope, Assessment.Blocked, ex.Message));
+                }
+            }
+            foreach (var declaration in workspace.SdkDeclarations)
+            {
+                if (!NuGetVersion.TryParse(declaration.Version, out var pinned)) continue;
+                foreach (var (channel, uri) in channels
+                    .Select(pair => (Version: NuGetVersion.TryParse(pair.Key + ".0", out var parsed)
+                            ? parsed : null, pair.Key, pair.Value))
+                    .Where(item => item.Version is not null && item.Version.Major > pinned.Major)
+                    .OrderByDescending(item => item.Version)
+                    .Take(2)
+                    .Select(item => (item.Key, item.Value)))
+                {
+                    try
+                    {
+                        var (body, freshness) = await source.ReadAsync(uri, cancellationToken);
+                        using var releases = JsonDocument.Parse(body);
+                        var candidates = new List<NuGetVersion>();
+                        foreach (var release in RequiredArray(releases.RootElement, "releases").EnumerateArray())
+                        {
+                            if (release.ValueKind != JsonValueKind.Object) continue;
+                            if (release.TryGetProperty("sdk", out var sdk)) Add(sdk);
+                            if (release.TryGetProperty("sdks", out var sdks) &&
+                                sdks.ValueKind == JsonValueKind.Array)
+                                foreach (var sdkEntry in sdks.EnumerateArray()) Add(sdkEntry);
+                        }
+                        void Add(JsonElement sdk)
+                        {
+                            if (sdk.ValueKind == JsonValueKind.Object &&
+                                sdk.TryGetProperty("version", out var version) &&
+                                version.ValueKind == JsonValueKind.String &&
+                                NuGetVersion.TryParse(version.GetString(), out var parsed) &&
+                                parsed.Major > pinned.Major)
+                                candidates.Add(parsed);
+                        }
+                        foreach (var candidate in new[]
+                        {
+                            candidates.Where(v => !v.IsPrerelease).OrderByDescending(v => v).FirstOrDefault(),
+                            candidates.Where(v => v.IsPrerelease).OrderByDescending(v => v).FirstOrDefault()
+                        }.Where(v => v is not null))
+                        {
+                            var kind = candidate!.IsPrerelease ? "sdk-preview-trial" : "sdk-major-trial";
+                            var subject = $"sdk-trial:{WorkspaceDiscovery.SdkScopeKey(workspace.Root, declaration.Scope)}:{kind}:{channel}";
+                            var revision = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+                                $"{subject}|{candidate.ToNormalizedString()}"))).ToLowerInvariant()[..16];
+                            findings.Add(new(Contract.Version, subject, subject, revision, kind,
+                                Priority.Low, pinned.ToNormalizedString(), candidate.ToNormalizedString(),
+                                new(null, null, declaration.Scope),
+                                indexFreshness == Assessment.Stale || freshness == Assessment.Stale
+                                    ? Assessment.Stale : Assessment.Partial,
+                                [new("official-sdk-release", uri,
+                                    (source as ReleaseMetadata)?.LastRetrieved(uri) ??
+                                    (clock ?? TimeProvider.System).GetUtcNow())],
+                                "review-isolated-sdk-only-trial-no-production-pin-or-tfm-change",
+                                true, "sdk-trial"));
+                        }
+                        coverage.Add(new("sdk-trial:" + declaration.Scope + ":" + channel,
+                            indexFreshness == Assessment.Stale || freshness == Assessment.Stale
+                                ? Assessment.Stale : Assessment.Partial,
+                            "Official SDK versions only; availability on this host and trial build/test compatibility are unverified. " +
+                            "Preview eligibility does not change production global.json policy."));
+                    }
+                    catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or InvalidOperationException)
+                    {
+                        coverage.Add(new("sdk-trial:" + declaration.Scope + ":" + channel,
+                            Assessment.Blocked, ex.Message));
+                    }
                 }
             }
         }
@@ -257,11 +336,14 @@ public sealed class NudgeScanner(IReleaseMetadata metadata, TimeProvider? clock 
         var observed = probeInstalled ? await DotnetProbes.ReadAsync(inventory, cancellationToken) : null;
         var packages = state is null ? null : await PackageIntegration.ScanAsync(inventory,
             state, cancellationToken);
-        return new(Contract.Version, inventory, findings.Concat(packages?.Findings ?? []).ToArray(),
+        var toolchains = state is null ? null : await ToolchainIntegration.ScanAsync(inventory,
+            observed, metadata, cancellationToken);
+        return new(Contract.Version, inventory, findings.Concat(packages?.Findings ?? [])
+                .Concat(toolchains?.Findings ?? []).ToArray(),
             inventory.Coverage.Where(c => observed is null || c.Check != "effective-sdk")
                 .Where(c => packages is null || c.Check != "nuget-resolved-graph")
                 .Concat(sdkCoverage).Concat(observed?.Coverage ?? [])
-                .Concat(packages?.Coverage ?? []).ToArray(),
+                .Concat(packages?.Coverage ?? []).Concat(toolchains?.Coverage ?? []).ToArray(),
             (clock ?? TimeProvider.System).GetUtcNow());
     }
 }

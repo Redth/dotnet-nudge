@@ -31,7 +31,8 @@ The following tools currently expose versioned JSON as text:
 | `nudge_package_assess(workspace, project, framework, packageId, approvedSources, acquisitionApproved, runtimeIdentifier?)` | After explicit approval of every named configured candidate/audit source, read metadata only for one exact restored package scope. |
 | `nudge_decide(workspace, findingId, revision, action, until?)` | Record a revision-bound snooze, exact-version skip, disable-category or enable-category. |
 | `nudge_preferences(workspace, findingId?, revision?, action?, category?)` | Read durable disabled categories and current suppressions; disable with current finding evidence, or re-enable a muted category by name after its finding disappears. |
-| `nudge_trial()` | Returns blocked coverage until the reviewed trial module is integrated; no trial is run. |
+| `nudge_toolchains(workspace)` | Read scoped workload/host evidence and observed local runtimes; report separate deployment-runtime coverage without installing tools. |
+| `nudge_trial(workspace, operation, id?, revision?, planJson?)` | `root`, `propose`, `approve`, `execute`, `status`, `cancel`, or `cleanup` an exact approved trial. `propose` takes the complete JSON plan; `approve` and `execute` require its revision. |
 
 `status`, `scan`, `package-context`, and `decision` CLI commands use the same service/state layer.
 `package-assess --workspace PATH --project RELATIVE_PROJECT --framework TFM
@@ -40,6 +41,15 @@ performs the corresponding explicitly approved metadata-only assessment.
 `preferences --workspace PATH [--enable-category NAME] --json` reads durable
 category mutes or reverses one existing mute. Re-enabling a category that is
 not muted returns an error.
+`toolchains --workspace PATH --json` returns the same scoped offline evidence
+and observations as `nudge_toolchains`. `trial root|propose|approve|execute|status|cancel|cleanup
+--workspace PATH [--plan ABSOLUTE_FILE] [--id ID] [--revision N] --json`
+uses the engine-owned `<state-dir>/trials` directory. First obtain that root,
+then supply a complete plan as described in `docs/upgrade-trials.md`. Proposing
+is not approval: only an explicit human approval of the exact revision permits
+execution. CLI Ctrl-C cancels its own active execution; cancellation from a
+separate CLI process cannot control that runner, whereas calls on one active
+MCP server share its runner. Status does not expose the ownership token.
 `doctor --workspace PATH --json` reports cached scope coverage without scanning
 and does not infer success from an absent worker or report.
 `hook` registers its host-provided workspace and queues a scan on session
@@ -49,8 +59,10 @@ The MCP process reconciles changed project/configuration/assets and local Git
 metadata every minute for active registrations, leases a queued scan per exact root, and
 retries read-only failures at most three times. Successful scans seed a
 fingerprint of inputs captured before the scan, so repeat hook sessions do
-not queue identical work; if inputs change during a scan, reconciliation
-queues the new state. It exits with its host; there
+not queue identical work; unchanged active scopes receive a bounded maintenance
+refresh after six hours (including on renewed hook registration). Failed
+refreshes retain bounded backoff rather than requeueing on every tick. If inputs
+change during a scan, reconciliation queues the new state. It exits with its host; there
 is no detached daemon. If MCP is lazily started or absent, cached status
 reports pending coverage and an explicit `scan` is available. When a scan is
 pending or failed, the cached snapshot is labeled stale and cannot be delivered
@@ -68,8 +80,11 @@ with a quiet first baseline and durable external-change deltas. Graph baselines
 and scan findings commit together only after the worker's lease is accepted;
 failed or cancelled scans leave changes available for the next attempt. For mapped
 NuGet sources, at most four direct package scopes per scan receive metadata-only
-candidate/advisory checks; missing, unsettled, unmapped, or unassessed graph
-coverage is explicit for each project/TFM/RID. No metadata result proves build/runtime compatibility,
+candidate checks. Remaining resolved direct/transitive scopes receive audit-only
+checks using permitted bulk vulnerability partitions (up to 512 scopes per scan);
+no version query or known-fix claim is made for audit-only findings. Missing,
+unsettled, unmapped, inaccessible or capped graph/advisory coverage is explicit
+per project/TFM/RID/package. No metadata result proves build/runtime compatibility,
 and a candidate is never labeled a known security fix without complete audit
 and dependency evidence. `dotnet-nudge package-context --workspace PATH
 [--handle EXACT_HANDLE] --json` exposes inert guidance from exact restored
@@ -81,7 +96,32 @@ Absent, ambiguous, or mismatched inspector results fall back to the exact
 local restored reader with partial diagnostic coverage. No inspector is
 installed automatically. Guidance text is untrusted data and is not
 installed as a host skill.
-Workload analysis and approved trials are not integrated yet. MCP protocol
-child-process tests verify initialization, tool listing, scoped scan, graph
-changes, exact guidance references, decisions and root rejection. Host
-configuration and live host activation are not certified by that fixture.
+Optional `.dotnet-nudge/toolchains.json` is an explicitly supplied, bounded
+offline evidence bundle (`ToolchainEvidenceBundle`), read within the admitted
+root. It can include reviewed `WorkloadAnalysisRequest`, host inventory,
+target availability, suggestions, macOS workload requirements and
+`RuntimeDeployment`; it does not infer host inventories, workload candidates,
+or installed deployment runtimes. Invalid, absent, stale, or unmatched
+evidence yields bounded blocked/unknown/stale coverage rather than a
+compatibility claim. Local shared runtimes are read from `dotnet --list-runtimes`
+and compared with official cached release metadata separately from explicit
+container/self-contained deployment versions. No workload/SDK installer or
+platform runtime smoke is included.
+
+Official security-release SDK servicing is prioritized separately from generic
+same-feature-band maintenance without claiming every CVE affects this app.
+Newer major and preview SDK releases can appear as low-priority, consent-requiring
+SDK-only trial proposals; they do not relax the production `allowPrerelease` pin
+or imply installed SDK, workload, build or TFM compatibility.
+
+Trials require a committed trusted repository, an exact discovered project,
+prepared SDK roots or an explicitly approved download, commands and budgets
+in the plan, followed by approval of its exact revision. Baseline and
+candidate run in separate trial worktrees and report build/test evidence,
+actual test counts and differences without changing the original checkout.
+Dirty trial worktrees refuse cleanup. Git worktrees are **not an OS sandbox**:
+MSBuild targets and tests may write outside them, so run only trusted code or
+provide an independent sandbox. Windows trial execution and platform workload
+installers are unsupported. MCP subprocess fixtures verify the protocol,
+scoped scans, decisions, offline evidence and an approved trial; they do not
+certify host conversational delivery or arbitrary untrusted build isolation.

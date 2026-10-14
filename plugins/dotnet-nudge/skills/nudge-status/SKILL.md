@@ -27,4 +27,4 @@ description: Check dotnet-nudge availability and report only verified .NET maint
 ## Supported and not yet implemented
 
 - The engine supports a local MCP endpoint when the self-contained executable is on the host `PATH`. Missing runtime/connection means no MCP assessment ran.
-- A hook schema or setup diagnostic is not evidence that a scan ran. Actual trial execution is not integrated.
+- A hook schema or setup diagnostic is not evidence that a scan ran. Trial execution requires an exact approved plan and trusted code; a cached status does not prove trial success.

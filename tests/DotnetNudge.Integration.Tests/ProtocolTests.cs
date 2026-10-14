@@ -6,11 +6,46 @@ using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using Microsoft.Data.Sqlite;
 using NuGet.Configuration;
+using DotnetNudge.Trials;
+using System.Runtime.InteropServices;
+using Toolchain = DotnetNudge.Toolchains;
 
 namespace DotnetNudge.Integration.Tests;
 
 public sealed class ProtocolTests
 {
+    sealed class ReleaseFixture : IReleaseMetadata
+    {
+        public Task<(string Body, Assessment Freshness)> ReadAsync(string source,
+            CancellationToken cancellationToken)
+        {
+            var body = source == ReleaseMetadata.IndexUrl
+                ? """{"releases-index":[{"channel-version":"10.0","releases.json":"https://dotnetcli.blob.core.windows.net/dotnet/release-metadata/10.0/releases.json"}]}"""
+                : source.EndsWith("/10.0/releases.json", StringComparison.Ordinal)
+                    ? File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "releases.json"))
+                    : throw new IOException("Unexpected release source: " + source);
+            return Task.FromResult((body, Assessment.Confirmed));
+        }
+    }
+
+    sealed class SdkTrialFixture : IReleaseMetadata
+    {
+        public bool Security { get; set; }
+        public Task<(string Body, Assessment Freshness)> ReadAsync(string source,
+            CancellationToken cancellationToken)
+        {
+            var body = source == ReleaseMetadata.IndexUrl
+                ? """{"releases-index":[{"channel-version":"10.0","releases.json":"https://example.invalid/10.0/releases.json"},{"channel-version":"11.0","releases.json":"https://example.invalid/11.0/releases.json"}]}"""
+                : source.EndsWith("/11.0/releases.json", StringComparison.Ordinal)
+                    ? """{"releases":[{"sdk":{"version":"11.0.100-rc.1"}}]}"""
+                    : JsonSerializer.Serialize(new
+                    {
+                        releases = new[] { new { security = Security, sdk = new { version = "10.0.113" } } }
+                    });
+            return Task.FromResult((body, Assessment.Confirmed));
+        }
+    }
+
     sealed class Clock : TimeProvider
     {
         public DateTimeOffset Now = DateTimeOffset.UtcNow;
@@ -68,6 +103,7 @@ public sealed class ProtocolTests
             Assert.Contains(tools, t => t.Name == "nudge_context");
             Assert.Contains(tools, t => t.Name == "nudge_decide");
             Assert.Contains(tools, t => t.Name == "nudge_trial");
+            Assert.Contains(tools, t => t.Name == "nudge_toolchains");
             Assert.Contains(tools, t => t.Name == "nudge_preferences");
             Assert.Contains(tools, t => t.Name == "nudge_package_assess");
             async Task<JsonDocument> Call(string tool, Dictionary<string, object?> args)
@@ -284,6 +320,93 @@ public sealed class ProtocolTests
             File.WriteAllText(project, """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>""");
             state.Reconcile();
             Assert.NotNull(state.LeaseScan("worker"));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void ActiveUnchangedScopeRefreshesAfterSixHoursWithoutRetryStorm()
+    {
+        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "nudge-refresh-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var scope = Path.Combine(root, "workspace");
+            Directory.CreateDirectory(scope);
+            File.WriteAllText(Path.Combine(scope, "App.csproj"), """<Project Sdk="Microsoft.NET.Sdk"/>""");
+            var clock = new Clock();
+            using var state = new NudgeState(Path.Combine(root, "state"), clock);
+            state.Register(scope, TimeSpan.FromDays(2), "host");
+            state.QueueScan(WorkspaceDiscovery.ScopeId(scope));
+            var baseline = state.LeaseScan("worker")!;
+            var inventory = WorkspaceDiscovery.Discover(scope);
+            state.FinishScan(baseline, "worker", new ScanReport(Contract.Version, inventory, [], [],
+                clock.Now), null, NudgeState.WorkspaceFingerprint(scope));
+            clock.Now = clock.Now.AddHours(5);
+            state.Reconcile();
+            state.QueueScan(inventory.WorkspaceId);
+            Assert.Null(state.LeaseScan("worker"));
+            clock.Now = clock.Now.AddHours(1).AddSeconds(1);
+            state.Reconcile();
+            var refresh = state.LeaseScan("worker")!;
+            state.Reconcile();
+            Assert.Null(state.LeaseScan("another"));
+            state.FinishScan(refresh, "worker", null, "metadata unavailable");
+            state.Reconcile();
+            Assert.Null(state.LeaseScan("another"));
+            clock.Now = clock.Now.AddMinutes(2);
+            var retry = state.LeaseScan("worker")!;
+            state.FinishScan(retry, "worker", new ScanReport(Contract.Version, inventory, [], [],
+                clock.Now), null, NudgeState.WorkspaceFingerprint(scope));
+            state.Reconcile();
+            Assert.Null(state.LeaseScan("worker"));
+            clock.Now = clock.Now.AddHours(6).AddSeconds(1);
+            state.Reconcile();
+            Assert.NotNull(state.LeaseScan("worker"));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task SecuritySdkAndPreviewTrialRemainDistinctAndCanBeSkipped()
+    {
+        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "nudge-sdk-trial-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "global.json"),
+                """{"sdk":{"version":"10.0.101","allowPrerelease":false}}""");
+            var metadata = new SdkTrialFixture { Security = true };
+            var inventory = WorkspaceDiscovery.Discover(root);
+            var (findings, coverage) = await SdkServicing.CheckAsync(inventory, metadata);
+            var servicing = Assert.Single(findings, f => f.Kind == "sdk-servicing");
+            Assert.Equal(Priority.High, servicing.Priority);
+            Assert.Equal("official-security-release", Assert.Single(servicing.Evidence).Type);
+            Assert.Contains(coverage, c => c.Check == "sdk:global.json" &&
+                c.Detail.Contains("CVE applicability", StringComparison.Ordinal));
+            var preview = Assert.Single(findings, f => f.Kind == "sdk-preview-trial");
+            Assert.Equal("11.0.100-rc.1", preview.Candidate);
+            Assert.Equal(Assessment.Partial, preview.Assessment);
+            Assert.Equal(Priority.Low, preview.Priority);
+            Assert.True(preview.RequiresConsent);
+            Assert.DoesNotContain(findings, f => f.Kind == "sdk-major-trial");
+            using var state = new NudgeState(Path.Combine(root, "state"));
+            state.Save(new ScanReport(Contract.Version, inventory, findings, coverage, DateTimeOffset.UtcNow));
+            state.Decide(inventory.RepositoryId, inventory.WorkspaceId,
+                preview.Id, preview.Revision, DecisionAction.SkipVersion, null);
+            Assert.Equal("version-skipped", state.Status(inventory.RepositoryId,
+                inventory.WorktreeId, inventory.WorkspaceId).Findings.Single(f =>
+                    f.Finding.Id == preview.Id).Suppression);
+            metadata.Security = false;
+            var (changed, _) = await SdkServicing.CheckAsync(inventory, metadata);
+            Assert.NotEqual(servicing.Revision,
+                Assert.Single(changed, f => f.Kind == "sdk-servicing").Revision);
+            Assert.Equal(Priority.Medium,
+                Assert.Single(changed, f => f.Kind == "sdk-servicing").Priority);
+            Assert.Contains("false", File.ReadAllText(Path.Combine(root, "global.json")),
+                StringComparison.Ordinal);
         }
         finally { Directory.Delete(root, recursive: true); }
     }
@@ -717,6 +840,9 @@ public sealed class ProtocolTests
             Assert.Contains(result.Coverage, c => c.Check == "package-scan-limit" &&
                 c.Assessment == Assessment.Partial);
             Assert.Equal(4, result.Coverage.Count(c => c.Check.StartsWith("package-feed:", StringComparison.Ordinal)));
+            Assert.Contains(result.Coverage, c =>
+                c.Check == "package-audit:App.csproj:net8.0:any:Acme.Four" &&
+                c.Assessment == Assessment.Partial);
             File.WriteAllText(Path.Combine(root, "NuGet.Config"), $"""
                 <configuration><packageSources><clear /><add key="private" value="{feed}" /></packageSources>
                 <packageSourceMapping><packageSource key="private"><package pattern="Acme.Four" /></packageSource></packageSourceMapping></configuration>
@@ -776,6 +902,199 @@ public sealed class ProtocolTests
             state.FinishScan(retry, "worker", new ScanReport(Contract.Version, inventory,
                 replayed.Findings, replayed.Coverage, clock.Now), null);
             Assert.NotEqual(original, state.GraphSnapshot(inventory.WorkspaceId, "App.csproj"));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task ScopedToolchainEvidenceKeepsLocalDeploymentAndHostFindingsDistinct()
+    {
+        var root = Path.Combine(AppContext.BaseDirectory, "nudge-toolchains-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "App.csproj"), """<Project Sdk="Microsoft.NET.Sdk"/>""");
+            File.WriteAllText(Path.Combine(root, "global.json"), """{"sdk":{"version":"10.0.101","workloadVersion":"10.0.103"}}""");
+            var evidenceFile = Path.Combine(root, ".dotnet-nudge", "toolchains.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(evidenceFile)!);
+            var now = DateTimeOffset.UtcNow;
+            var evidence = new Toolchain.Evidence("local-fixture", now);
+            string Fixture(string name) => File.ReadAllText(
+                Path.Combine(AppContext.BaseDirectory, "Fixtures", name));
+            var inventory = Toolchain.InstalledInventoryReader.Parse(
+                Fixture("installed-workloads.json"), evidence).Value!;
+            var request = new Toolchain.WorkloadAnalysisRequest(
+                "10.0.101", null, false,
+                [new("10.0.100", "10.0.103", "10.103.0",
+                    new(Fixture("workloadset.json"), evidence))],
+                new HashSet<string> { "microsoft.net.sdk.android" },
+                new Dictionary<string, Toolchain.VersionedJsonDocument>
+                {
+                    ["microsoft.net.sdk.android"] = new(
+                        Fixture("android-dependencies.json"), evidence, "9.0.100", "35.0.50")
+                },
+                new(["10.0.10"], ["net10.0-android"]), inventory,
+                new(now, TimeSpan.FromDays(1)));
+            var host = new Toolchain.HostToolInventory(null, "22.0", null, null,
+                new Dictionary<string, string>(), new Dictionary<string, string>(), evidence);
+            var bundle = new ToolchainEvidenceBundle(request, host, [], null, null,
+                new(Toolchain.RuntimeDeploymentKind.SelfContained,
+                    EmbeddedRuntimeVersions: new Dictionary<string, string>
+                    { ["Microsoft.NETCore.App"] = "10.0.1" }, Evidence: evidence));
+            File.WriteAllText(evidenceFile, JsonSerializer.Serialize(bundle, Contract.Json));
+            var observed = new ProbeSnapshot("dotnet",
+                new Dictionary<string, string> { ["."] = "10.0.101" },
+                "10.0.101", "Microsoft.NETCore.App 10.0.1 [/test]", null, []);
+            var analyzed = await ToolchainIntegration.ScanAsync(WorkspaceDiscovery.Discover(root),
+                observed, new ReleaseFixture(), CancellationToken.None);
+            Assert.Contains(analyzed.Findings, f => f.Kind == "workload-set-difference");
+            Assert.Contains(analyzed.Findings, f => f.Kind == "host-tool-incompatibility");
+            Assert.True(analyzed.Findings.Any(f => f.Kind == "local-runtime-security-servicing"),
+                string.Join("; ", analyzed.Coverage.Where(c => c.Check.StartsWith("runtime:", StringComparison.Ordinal))
+                    .Select(c => c.Detail)));
+            Assert.Contains(analyzed.Findings, f => f.Kind == "deployment-runtime-security-servicing");
+            Assert.Contains(analyzed.Coverage, c => c.Check == "global-json:global.json");
+            Assert.NotEmpty(analyzed.Runtimes);
+            using var state = new NudgeState(Path.Combine(root, "state"));
+            var scan = await new NudgeScanner(new ReleaseFixture()).ScanAsync(root,
+                state: state, probeInstalled: false);
+            state.Save(scan);
+            using var service = new NudgeService(state);
+            Assert.Contains(service.Status(root).Findings,
+                f => f.Finding.Kind == "workload-set-difference");
+            Assert.Contains(service.Status(root).Coverage,
+                c => c.Check == "host-compatibility");
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task McpApprovedIsolatedTrialKeepsOriginalAndRefusesDirtyCleanup()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var root = Path.Combine(Environment.GetEnvironmentVariable("NUDGE_INTEGRATION_TEST_ROOT")
+            ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "nudge-approved-trial-" + Guid.NewGuid().ToString("N"));
+        var repo = Path.Combine(root, "repo");
+        var stateDir = Path.Combine(root, "state");
+        Directory.CreateDirectory(repo);
+        try
+        {
+            async Task<string> Git(params string[] args)
+            {
+                var start = new ProcessStartInfo("git")
+                {
+                    WorkingDirectory = repo, RedirectStandardOutput = true,
+                    RedirectStandardError = true, UseShellExecute = false
+                };
+                foreach (var arg in args) start.ArgumentList.Add(arg);
+                using var process = Process.Start(start)!;
+                var output = process.StandardOutput.ReadToEndAsync();
+                var error = process.StandardError.ReadToEndAsync();
+                await process.WaitForExitAsync();
+                Assert.True(process.ExitCode == 0, await error);
+                return (await output).Trim();
+            }
+            var project = Path.Combine(repo, "App.csproj");
+            var original = """<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Acme.Parent" Version="1.0.0" /></ItemGroup></Project>""";
+            File.WriteAllText(project, original);
+            File.WriteAllText(Path.Combine(repo, ".gitignore"), "bin/\nobj/\n");
+            await Git("init", "-q");
+            await Git("add", ".");
+            await Git("-c", "user.email=fixture@example.invalid", "-c", "user.name=Fixture",
+                "commit", "-qm", "fixture");
+            var commit = await Git("rev-parse", "HEAD");
+            var prepared = new[] { Path.Combine(root, "sdk-baseline"), Path.Combine(root, "sdk-candidate") };
+            for (var i = 0; i < prepared.Length; i++)
+            {
+                Directory.CreateDirectory(prepared[i]);
+                var version = i == 0 ? "10.0.100" : "10.0.401";
+                var executable = Path.Combine(prepared[i], "dotnet");
+                File.WriteAllText(executable, $"""
+                    #!/bin/sh
+                    case "$1" in
+                      --version) echo {version};;
+                      build) mkdir -p bin; printf '{version}' > bin/App.dll;;
+                      test) echo 'Total tests: 1';;
+                      *) echo 'fixture restore';;
+                    esac
+                    """);
+                File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite |
+                    UnixFileMode.UserExecute);
+            }
+            var trialRoot = Path.Combine(stateDir, "trials");
+            var plan = new TrialPlan("integration", 1, repo, commit, trialRoot,
+                ["App.csproj"],
+                new("10.0.100", RuntimeInformation.RuntimeIdentifier, prepared[0]),
+                new("10.0.401", RuntimeInformation.RuntimeIdentifier, prepared[1]),
+                [new("App.csproj", "Acme.Parent", "1.0.0", "2.0.0")],
+                [new("restore", ["App.csproj"]), new("build", ["App.csproj"]),
+                    new("test", ["App.csproj", "--no-build"])],
+                new("artifacts/logs", "artifacts/changes.diff"),
+                new(50_000_000, TimeSpan.FromMinutes(2), TimeSpan.FromSeconds(15)), false);
+            var engine = Environment.GetEnvironmentVariable("NUDGE_INTEGRATION_ENGINE_PATH");
+            var transport = new StdioClientTransport(new StdioClientTransportOptions
+            {
+                Name = "trial-integration",
+                Command = engine ?? "dotnet",
+                Arguments = engine is null
+                    ? [typeof(DotnetNudge.McpEndpoint).Assembly.Location,
+                        "mcp", "--state-dir", stateDir]
+                    : ["mcp", "--state-dir", stateDir],
+                WorkingDirectory = root
+            });
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            await using (var client = await McpClient.CreateAsync(transport,
+                cancellationToken: timeout.Token))
+            {
+                Assert.Contains(await client.ListToolsAsync(cancellationToken: timeout.Token),
+                    t => t.Name == "nudge_trial");
+                var toolchains = await client.CallToolAsync("nudge_toolchains",
+                    new Dictionary<string, object?> { ["workspace"] = repo },
+                    cancellationToken: timeout.Token);
+                Assert.True(toolchains.IsError != true);
+                using (var toolReport = JsonDocument.Parse(
+                    Assert.Single(toolchains.Content.OfType<TextContentBlock>()).Text))
+                    Assert.Contains(toolReport.RootElement.GetProperty("coverage").EnumerateArray(),
+                        c => c.GetProperty("check").GetString() == "workload-set");
+                async Task<JsonDocument> Trial(string operation, string? id = null,
+                    int? revision = null, string? planJson = null)
+                {
+                    var call = await client.CallToolAsync("nudge_trial",
+                        new Dictionary<string, object?>
+                        {
+                            ["workspace"] = repo, ["operation"] = operation,
+                            ["id"] = id, ["revision"] = revision, ["planJson"] = planJson
+                        }, cancellationToken: timeout.Token);
+                    Assert.True(call.IsError != true, string.Join("; ",
+                        call.Content.OfType<TextContentBlock>().Select(c => c.Text)));
+                    return JsonDocument.Parse(Assert.Single(call.Content.OfType<TextContentBlock>()).Text);
+                }
+                using (var proposed = await Trial("propose", planJson: JsonSerializer.Serialize(plan, Contract.Json)))
+                {
+                    Assert.Equal("proposed", proposed.RootElement.GetProperty("phase").GetString());
+                    Assert.False(proposed.RootElement.TryGetProperty("ownerToken", out _));
+                }
+                using (var approved = await Trial("approve", "integration", 1))
+                    Assert.Equal("approved", approved.RootElement.GetProperty("phase").GetString());
+                using (var executed = await Trial("execute", "integration", 1))
+                {
+                    Assert.True(executed.RootElement.GetProperty("phase").GetString() == "ready-for-review",
+                        executed.RootElement.GetProperty("blockReason").GetString());
+                    var report = executed.RootElement.GetProperty("report");
+                    Assert.Equal(1, report.GetProperty("baseline").GetProperty("testCount").GetInt32());
+                    Assert.Equal(1, report.GetProperty("candidate").GetProperty("testCount").GetInt32());
+                    Assert.Contains("2.0.0", File.ReadAllText(
+                        report.GetProperty("diffPath").GetString()!));
+                }
+                var cleanup = await client.CallToolAsync("nudge_trial", new Dictionary<string, object?>
+                    { ["workspace"] = repo, ["operation"] = "cleanup", ["id"] = "integration" },
+                    cancellationToken: timeout.Token);
+                Assert.True(cleanup.IsError);
+                Assert.Equal(original, File.ReadAllText(project));
+                Assert.Equal(commit, await Git("rev-parse", "HEAD"));
+                Assert.Equal("", await Git("status", "--porcelain"));
+            }
         }
         finally { Directory.Delete(root, recursive: true); }
     }

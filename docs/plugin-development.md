@@ -144,6 +144,8 @@ The executable CLI contract is:
 version
 scan --workspace PATH [--state-dir PATH] --json
 status --workspace PATH [--state-dir PATH] --json
+toolchains --workspace PATH [--state-dir PATH] --json
+trial root|propose|approve|execute|status|cancel|cleanup --workspace PATH [--plan ABSOLUTE_FILE] [--id ID] [--revision N] [--state-dir PATH] --json
 doctor [--workspace PATH] [--state-dir PATH] --json
 decision --workspace PATH --finding ID --revision REV --action snooze|skip-version|disable-category|enable-category [--until RFC3339] [--state-dir PATH] --json
 ```
@@ -151,8 +153,9 @@ decision --workspace PATH --finding ID --revision REV --action snooze|skip-versi
 `scan` and `status` are read-only assessments. `decision` persists an explicit
 preference and must not run until the user approves its exact workspace,
 finding ID, revision, action, and optional expiry. `mcp [--state-dir PATH]`
-serves the local stdio endpoint; see [integration](integration.md). Actual
-trials are blocked until the reviewed trial library is wired. None of these
+serves the local stdio endpoint; see [integration](integration.md). Trials
+require an exact approved plan and trusted project code, not an OS sandbox;
+see [trial limits](upgrade-trials.md). None of these
 commands are executed by the hook launchers.
 
 ## Offline validation

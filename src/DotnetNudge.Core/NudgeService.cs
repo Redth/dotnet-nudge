@@ -1,11 +1,14 @@
 using System.Text.Json;
+using DotnetNudge.Trials;
 
 namespace DotnetNudge.Core;
 
-public sealed class NudgeService(NudgeState state, string? owner = null, bool closeOnDispose = true) : IDisposable
+public sealed class NudgeService(NudgeState state, string? owner = null, bool closeOnDispose = true,
+    TrialRunner? runner = null) : IDisposable
 {
     readonly string sessionOwner = owner ?? "cli:" + Guid.NewGuid().ToString("N");
     readonly HashSet<string> registered = new(StringComparer.Ordinal);
+    readonly TrialIntegration trials = new(state, runner);
     static string AdmittedPath(string root) =>
         Path.IsPathFullyQualified(root) ? WorkspaceDiscovery.Canonical(root)
             : throw new ArgumentException("Workspace path must be absolute.", nameof(root));
@@ -81,6 +84,41 @@ public sealed class NudgeService(NudgeState state, string? owner = null, bool cl
         PackageIntegration.AssessAsync(WorkspaceDiscovery.Discover(AdmittedPath(root)),
             project, framework, runtimeIdentifier, packageId, approvedSourceNames,
             acquisitionApproved, token);
+
+    public async Task<ToolchainScanResult> ToolchainsAsync(string root,
+        CancellationToken token = default)
+    {
+        var inventory = WorkspaceDiscovery.Discover(AdmittedPath(root));
+        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(12) };
+        var metadata = new ReleaseMetadata(state, client,
+            fixtureDirectory: Environment.GetEnvironmentVariable("NUDGE_RELEASES_DIR"));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(TimeSpan.FromSeconds(45));
+        try
+        {
+            var observed = await DotnetProbes.ReadAsync(inventory, deadline.Token);
+            return await ToolchainIntegration.ScanAsync(inventory, observed, metadata, deadline.Token);
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        {
+            throw new IOException("Read-only toolchain assessment exceeded 45 seconds.");
+        }
+    }
+
+    public string TrialRoot => trials.Root;
+    public TrialStatusReport ProposeTrial(string root, TrialPlan plan) =>
+        trials.Propose(AdmittedPath(root), plan);
+    public TrialStatusReport ApproveTrial(string root, string id, int revision) =>
+        trials.Approve(AdmittedPath(root), id, revision);
+    public Task<TrialStatusReport> ExecuteTrialAsync(string root, string id, int revision,
+        CancellationToken token = default) =>
+        trials.ExecuteAsync(AdmittedPath(root), id, revision, token);
+    public TrialStatusReport TrialStatus(string root, string id) =>
+        trials.Read(AdmittedPath(root), id);
+    public TrialStatusReport CancelTrial(string root, string id) =>
+        trials.Cancel(AdmittedPath(root), id);
+    public Task<TrialStatusReport> CleanupTrialAsync(string root, string id) =>
+        trials.CleanupAsync(AdmittedPath(root), id);
 
     public StatusReport Register(string root)
     {

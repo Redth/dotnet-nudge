@@ -15,5 +15,13 @@
   <ItemGroup>
     <Content Include="../DotnetNudge.Packages.Tests/Fixtures/graph.json"
              Link="Fixtures/graph.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../DotnetNudge.Toolchains.Tests/Fixtures/workloadset.json"
+             Link="Fixtures/workloadset.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../DotnetNudge.Toolchains.Tests/Fixtures/android-dependencies.json"
+             Link="Fixtures/android-dependencies.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../DotnetNudge.Toolchains.Tests/Fixtures/installed-workloads.json"
+             Link="Fixtures/installed-workloads.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../DotnetNudge.Toolchains.Tests/Fixtures/releases.json"
+             Link="Fixtures/releases.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
