@@ -23,4 +23,4 @@ jobs:
       - name: Build toolchains library
         run: dotnet build src/DotnetNudge.Toolchains/DotnetNudge.Toolchains.csproj --configuration Release
       - name: Test toolchains library
-        run: dotnet test tests/DotnetNudge.Toolchains.Tests/DotnetNudge.Toolchains.Tests.csproj --configuration Release --no-build
+        run: dotnet test tests/DotnetNudge.Toolchains.Tests/DotnetNudge.Toolchains.Tests.csproj --configuration Release
