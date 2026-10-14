@@ -97,6 +97,57 @@ public sealed class PackageTests
     }
 
     [Fact]
+    public void Failed_snapshot_write_does_not_advance_baseline_or_transition_sequence()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = new Fixture();
+        var graph = new PackageGraphReader().Read(fixture.Assets);
+        var stateFolder = Path.Combine(fixture.Root, "state");
+        Directory.CreateDirectory(stateFolder);
+        var stateFile = Path.Combine(stateFolder, "transitions.json");
+        var observer = new GraphTransitions(stateFile);
+        Assert.Empty(observer.Observe(graph));
+        var baselineBytes = File.ReadAllBytes(stateFile);
+        var changed = graph with
+        {
+            Packages = graph.Packages.Select(p => p.Id == "Acme.Child" && p.Framework == "net8.0"
+                ? p with { Version = NuGetVersion.Parse("1.3.0") } : p).ToArray()
+        };
+        var originalMode = File.GetUnixFileMode(stateFolder);
+        try
+        {
+            File.SetUnixFileMode(stateFolder, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+            var failure = Record.Exception(() => observer.Observe(changed));
+            Assert.True(failure is IOException or UnauthorizedAccessException,
+                $"Snapshot write unexpectedly succeeded or failed differently: {failure}");
+        }
+        finally
+        {
+            File.SetUnixFileMode(stateFolder, originalMode);
+        }
+        Assert.Equal(baselineBytes, File.ReadAllBytes(stateFile));
+        var change = Assert.Single(observer.Observe(changed));
+        Assert.Equal(GraphChangeKind.Upgraded, change.Kind);
+        Assert.Equal(1, change.Sequence);
+        Assert.Empty(new GraphTransitions(stateFile).Observe(changed));
+    }
+
+    [Fact]
+    public void Failed_initial_snapshot_does_not_create_an_in_memory_baseline()
+    {
+        using var fixture = new Fixture();
+        var graph = new PackageGraphReader().Read(fixture.Assets);
+        var path = Path.Combine(fixture.Root, "state.json");
+        var observer = new GraphTransitions(path);
+        Directory.CreateDirectory(path);
+        var failure = Record.Exception(() => observer.Observe(graph));
+        Assert.True(failure is IOException or UnauthorizedAccessException);
+        Directory.Delete(path);
+        Assert.Empty(observer.Observe(graph));
+        Assert.Empty(new GraphTransitions(path).Observe(graph));
+    }
+
+    [Fact]
     public void Exact_archive_skill_and_declared_readme_are_read_as_inert_bytes()
     {
         using var fixture = new Fixture();
@@ -272,6 +323,11 @@ public sealed class PackageTests
         Assert.Equal(EvidenceStatus.Unknown,
             (await adapter.ReadProjectSkillAsync(fixture.Project, fixture.Assets, row, reader)).Status);
         File.Delete(Path.Combine(fixture.Root, "omit"));
+        var rawCalls = File.ReadAllLines(log).Count(c => c.Contains("--print --row 7 --raw"));
+        File.AppendAllText(fixture.Assets, "\n");
+        Assert.Equal(EvidenceStatus.Unknown,
+            (await adapter.ReadProjectSkillAsync(fixture.Project, fixture.Assets, row, reader)).Status);
+        Assert.Equal(rawCalls, File.ReadAllLines(log).Count(c => c.Contains("--print --row 7 --raw")));
         File.WriteAllText(Path.Combine(fixture.Root, "NuGet.Config"), """
             <configuration><packageSources><clear /><add key="private" value="https://example.invalid/v3/index.json" /></packageSources>
             <packageSourceMapping><packageSource key="private"><package pattern="Acme.*" /></packageSource></packageSourceMapping></configuration>

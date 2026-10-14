@@ -21,7 +21,9 @@ dotnet test tests/DotnetNudge.Packages.Tests/DotnetNudge.Packages.Tests.csproj
   sequenced add/remove/upgrade/downgrade/role events. Pass a private, per-worktree
   state path outside the repository to retain comparisons across restarts.
   Unknown graphs do not replace a baseline. Pass `GraphObservationOrigin` to
-  distinguish a branch/worktree switch from an in-session edit.
+  distinguish a branch/worktree switch from an in-session edit. An I/O failure
+  during atomic snapshot replacement is surfaced without advancing the in-memory
+  baseline or transition sequence; callers can retry the observation.
 - `PackageSourcePolicy(projectDirectory).Allowed(packageId, approvedNames?)`
   applies NuGet configuration hierarchy, disabled sources, and official package
   source mapping. Without mapping, the caller must supply explicit approved
@@ -34,11 +36,16 @@ dotnet test tests/DotnetNudge.Packages.Tests/DotnetNudge.Packages.Tests.csproj
   cached as clean. Candidate lists and dependency groups use metadata-only
   registration reads from permitted sources. `MinimalKnownFix` is only produced
   with complete feed evidence. `Compatibility=Partial` means static metadata
-  fits; it is **not** a verified restore/build/runtime result. Parent upgrade
+  fits; it is **not** a verified restore/build/runtime result. Missing or
+  incompatible candidate framework evidence is `Unknown` and cannot count as
+  a known fix. Parent upgrade
   options require evidence that their new dependency minimum reaches the
-  fixed version; longer transitive paths remain unconfirmed. No transitive
+  fixed version. `RemediationPath.Coverage` distinguishes checked parent
+  metadata from missing/unpermitted sources or indirect paths; such gaps make
+  the overall assessment partial. No transitive
   direct reference/pin is added. Assessments expose a project/TFM/package
-  `SubjectKey`, evidence revision and retrieval time for Core mapping;
+  `SubjectKey`, canonical revision covering advisory severity, fix, candidates
+  and parent remediation, plus retrieval time for Core mapping;
   mutation always requires separate consent.
 - `PackageGuidanceReader.ReadRestored(node)` and
   `.ReadArchive(explicitNupkgPath, node)` validate exact manifest identity and
@@ -49,8 +56,9 @@ dotnet test tests/DotnetNudge.Packages.Tests/DotnetNudge.Packages.Tests.csproj
 - `InspectorAdapter(executable, expectedVersion).InventoryAsync(projectPath,
   assetsPath, reader)` and `.ReadProjectSkillAsync(...)` require a pinned
   installed executable, the settled assets graph and `--offline`. They parse
-  JSONL rows, select the **returned** row, use separate raw output, and reject
-  omitted-text or changed-assets results. The explicit
+  JSONL rows with their originating `InspectorSkillRow.AssetsFingerprint`,
+  select the **returned** row, use separate raw output, and reject omitted-text
+  or changed-assets results before and after the selected read. The explicit
   `.ListPackageSkillsAsync(...)`/`.ReadPackageFileAsync(...)` network routes
   require caller-supplied acquisition consent and a mapped/approved source.
   Absence or version mismatch is an unknown result; use the local reader instead.

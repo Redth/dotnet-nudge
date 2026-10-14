@@ -22,6 +22,8 @@ public sealed class FeedTests
             """{"acme.child":[{"url":"https://example.invalid/extension","severity":2,"versions":"[1.3.0,1.4.0)"}]}""";
         public string Revision { get; set; } = "2026-01-01T00:00:00Z";
         public bool RequireAuthentication { get; set; }
+        public bool MissingVulnerabilityResource { get; set; }
+        public bool IncompatibleCandidateFramework { get; set; }
 
         public LocalFeed()
         {
@@ -50,7 +52,9 @@ public sealed class FeedTests
                     }
                     var payload = path switch
                     {
-                        "/index.json" => $$"""{"version":"3.0.0","resources":[{"@id":"{{Base}}registration/","@type":"RegistrationsBaseUrl/3.6.0"},{"@id":"{{Base}}vulnerability-index.json","@type":"VulnerabilityInfo/6.7.0"}]}""",
+                        "/index.json" => MissingVulnerabilityResource
+                            ? $$"""{"version":"3.0.0","resources":[{"@id":"{{Base}}registration/","@type":"RegistrationsBaseUrl/3.6.0"}]}"""
+                            : $$"""{"version":"3.0.0","resources":[{"@id":"{{Base}}registration/","@type":"RegistrationsBaseUrl/3.6.0"},{"@id":"{{Base}}vulnerability-index.json","@type":"VulnerabilityInfo/6.7.0"}]}""",
                         "/vulnerability-index.json" => $$"""[{"@name":"base","@id":"{{Base}}base.json","@updated":"{{Revision}}"},{"@name":"update","@id":"{{Base}}updates.json","@updated":"{{Revision}}"}]""",
                         "/base.json" => BaseAdvisories,
                         "/updates.json" => UpdateAdvisories,
@@ -92,6 +96,8 @@ public sealed class FeedTests
             {
                 var groups = id == "acme.parent" && version == "1.1.0"
                     ? """[{"targetFramework":"net8.0","dependencies":[{"id":"Acme.Child","range":"[1.4.0,)"}]}]"""
+                    : id == "acme.child" && version != "1.2.0" && IncompatibleCandidateFramework
+                    ? """[{"targetFramework":"net10.0","dependencies":[]}]"""
                     : version == "1.3.0"
                     ? """[{"targetFramework":"net8.0","dependencies":[{"id":"Acme.Extra","range":"[1.0.0,)"}]}]"""
                     : """[{"targetFramework":"net8.0","dependencies":[]}]""";
@@ -147,6 +153,7 @@ public sealed class FeedTests
                 c.Compatibility == EvidenceStatus.Partial);
             Assert.Equal(NuGetVersion.Parse("1.1.0"), Assert.Single(first.Paths).ParentCandidate);
             Assert.Equal("private", first.Paths[0].ParentSource);
+            Assert.Equal(EvidenceStatus.Complete, first.Paths[0].Coverage);
             Assert.DoesNotContain(first.Candidates, c => c.Version.IsPrerelease);
             Assert.DoesNotContain(privateFeed.Requests, r => r.EndsWith(".nupkg"));
             var preview = await intelligence.AssessAsync(node, graph, includePrerelease: true);
@@ -196,4 +203,125 @@ public sealed class FeedTests
         }
         finally { Directory.Delete(root, recursive: true); }
     }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Missing_or_incomplete_advisory_partitions_are_partial_and_not_cached(bool missingResource)
+    {
+        using var feed = new LocalFeed { MissingVulnerabilityResource = missingResource };
+        if (!missingResource) feed.BaseAdvisories = "{malformed";
+        var root = CreateMappedConfig(feed, "Acme.*");
+        try
+        {
+            var node = Node();
+            var graph = new PackageGraph("", "", [node], EvidenceStatus.Complete, null);
+            var now = DateTimeOffset.Parse("2026-01-02T00:00:00Z");
+            var intelligence = new PackageIntelligence(new PackageSourcePolicy(root), () => now,
+                TimeSpan.FromHours(6));
+            var first = await intelligence.AssessAsync(node, graph);
+            Assert.Equal(EvidenceStatus.Partial, first.Status);
+            Assert.Null(first.MinimalKnownFix);
+            Assert.Contains(first.Diagnostics, d => d.Contains("Audit source", StringComparison.Ordinal));
+            if (!missingResource)
+            {
+                feed.BaseAdvisories =
+                    """{"acme.child":[{"url":"https://example.invalid/a","severity":2,"versions":"[1.0.0,1.3.0)"}]}""";
+                feed.Revision = "2026-01-03T00:00:00Z";
+                now = now.AddHours(7);
+                var recovered = await intelligence.AssessAsync(node, graph);
+                Assert.Equal(EvidenceStatus.Complete, recovered.Status);
+                Assert.Single(recovered.Advisories);
+                Assert.Equal(NuGetVersion.Parse("1.4.0"), recovered.MinimalKnownFix);
+            }
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task Incompatible_framework_candidates_cannot_be_known_fixes()
+    {
+        using var feed = new LocalFeed { IncompatibleCandidateFramework = true };
+        var root = CreateMappedConfig(feed, "Acme.*");
+        try
+        {
+            var node = Node();
+            var graph = new PackageGraph("", "", [node], EvidenceStatus.Complete, null);
+            var result = await new PackageIntelligence(new PackageSourcePolicy(root)).AssessAsync(node, graph);
+            Assert.Equal(EvidenceStatus.Complete, result.Status);
+            Assert.Null(result.MinimalKnownFix);
+            Assert.All(result.Candidates, c => Assert.Equal(EvidenceStatus.Unknown, c.Compatibility));
+            Assert.Contains(result.Candidates, c => c.Diagnostic!.Contains("No candidate dependency group"));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task Unmapped_direct_parent_has_explicit_remediation_coverage_gap()
+    {
+        using var feed = new LocalFeed();
+        var root = CreateMappedConfig(feed, "Acme.Child");
+        try
+        {
+            var node = Node();
+            var parent = node with { Id = "Acme.Parent", Version = NuGetVersion.Parse("1.0.0"),
+                Direct = true, Dependencies = ["Acme.Child"] };
+            var graph = new PackageGraph("", "", [node, parent], EvidenceStatus.Complete, null);
+            var unknown = await new PackageIntelligence(new PackageSourcePolicy(root)).AssessAsync(node, graph);
+            Assert.Equal(EvidenceStatus.Partial, unknown.Status);
+            Assert.Equal(NuGetVersion.Parse("1.4.0"), unknown.MinimalKnownFix);
+            Assert.Equal(EvidenceStatus.Unknown, Assert.Single(unknown.Paths).Coverage);
+            Assert.Null(unknown.Paths[0].ParentCandidate);
+            Assert.Contains(unknown.Diagnostics, d => d.Contains("direct parent", StringComparison.OrdinalIgnoreCase));
+            File.WriteAllText(Path.Combine(root, "NuGet.Config"), Config(feed, "Acme.*"));
+            var complete = await new PackageIntelligence(new PackageSourcePolicy(root)).AssessAsync(node, graph);
+            Assert.Equal(EvidenceStatus.Complete, complete.Status);
+            Assert.Equal(NuGetVersion.Parse("1.1.0"), complete.Paths[0].ParentCandidate);
+            Assert.NotEqual(unknown.EvidenceRevision, complete.EvidenceRevision);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void Evidence_revision_covers_severity_fix_paths_and_diagnostics_independent_of_order()
+    {
+        var node = Node();
+        var advisory = new PackageAdvisory("https://example.invalid/a", 1, "[1.0.0,1.3.0)", "audit");
+        var candidate = new UpdateCandidate(NuGetVersion.Parse("1.4.0"), "minor", "private",
+            EvidenceStatus.Partial, "static evidence");
+        var path = new RemediationPath(["Acme.Child", "Acme.Parent"], "Acme.Parent", null, null,
+            EvidenceStatus.Unknown, "no source");
+        var initial = new PackageAssessment(node, EvidenceStatus.Partial, [advisory], [candidate], null,
+            [path], ["limited"]);
+        Assert.NotEqual(initial.EvidenceRevision, (initial with
+            { Advisories = [advisory with { Severity = 3 }] }).EvidenceRevision);
+        Assert.NotEqual(initial.EvidenceRevision, (initial with
+            { MinimalKnownFix = NuGetVersion.Parse("1.4.0") }).EvidenceRevision);
+        Assert.NotEqual(initial.EvidenceRevision, (initial with
+            { Paths = [path with { ParentCandidate = NuGetVersion.Parse("1.1.0"), ParentSource = "private" }] })
+            .EvidenceRevision);
+        Assert.NotEqual(initial.EvidenceRevision, (initial with
+            { Candidates = [candidate with { Diagnostic = "changed" }] }).EvidenceRevision);
+        Assert.NotEqual(initial.EvidenceRevision, (initial with
+            { Paths = [path with { Coverage = EvidenceStatus.Partial }] }).EvidenceRevision);
+        var second = advisory with { Url = "https://example.invalid/b" };
+        Assert.Equal((initial with { Advisories = [advisory, second] }).EvidenceRevision,
+            (initial with { Advisories = [second, advisory] }).EvidenceRevision);
+    }
+
+    private static PackageNode Node() => new("Fixture", "net8.0", null, "Acme.Child",
+        NuGetVersion.Parse("1.2.0"), false, null, null, null, []);
+
+    private static string CreateMappedConfig(LocalFeed feed, string pattern)
+    {
+        var root = Path.Combine(AppContext.BaseDirectory, "feed-review-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        File.WriteAllText(Path.Combine(root, "NuGet.Config"), Config(feed, pattern));
+        return root;
+    }
+
+    private static string Config(LocalFeed feed, string pattern) => $$"""
+        <configuration><packageSources><clear /><add key="private" value="{{feed.Base}}index.json" /></packageSources>
+        <packageSourceMapping><packageSource key="private"><package pattern="{{pattern}}" /></packageSource></packageSourceMapping></configuration>
+        """;
 }

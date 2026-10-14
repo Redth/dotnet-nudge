@@ -6,7 +6,8 @@ using NuGet.Versioning;
 namespace DotnetNudge.Packages;
 
 public sealed record InspectorResult(EvidenceStatus Status, string? Content, string? Diagnostic);
-public sealed record InspectorSkillRow(int Row, string PackageId, string Version, string Path, string? Name);
+public sealed record InspectorSkillRow(int Row, string PackageId, string Version, string Path,
+    string? Name, string AssetsFingerprint);
 
 public sealed class InspectorAdapter
 {
@@ -61,7 +62,7 @@ public sealed class InspectorAdapter
                     p.Version.ToString().Equals(version, StringComparison.OrdinalIgnoreCase)))
                     throw new InvalidDataException($"Inspector row is outside restored graph: {id}@{version}");
                 TryText(obj, "Name", out var name);
-                rows.Add(new(row, id, version, path, name));
+                rows.Add(new(row, id, version, path, name, graph.Fingerprint));
             }
             if (reader.Read(assetsPath).Fingerprint != graph.Fingerprint)
                 throw new InvalidDataException("Assets changed during inspector inventory; retry after restore settles.");
@@ -76,15 +77,19 @@ public sealed class InspectorAdapter
     public async Task<InspectorResult> ReadProjectSkillAsync(string projectPath, string assetsPath,
         InspectorSkillRow row, PackageGraphReader reader, CancellationToken token = default)
     {
+        if (string.IsNullOrEmpty(row.AssetsFingerprint) ||
+            reader.Read(assetsPath).Fingerprint != row.AssetsFingerprint)
+            return new(EvidenceStatus.Unknown, null, "Assets changed since the selected skill inventory.");
         var (rows, inventory) = await InventoryAsync(projectPath, assetsPath, reader, token);
         if (inventory.Status != EvidenceStatus.Complete)
             return inventory;
         if (!rows.Contains(row))
             return new(EvidenceStatus.Unknown, null, "Selected row changed or is outside current inventory.");
-        var fingerprint = reader.Read(assetsPath).Fingerprint;
+        if (reader.Read(assetsPath).Fingerprint != row.AssetsFingerprint)
+            return new(EvidenceStatus.Unknown, null, "Assets changed before selected skill reading.");
         var content = await Invoke(["project", projectPath, "-S", "Skills", "--print", "--row",
             row.Row.ToString(System.Globalization.CultureInfo.InvariantCulture), "--raw", "--offline"], token);
-        if (reader.Read(assetsPath).Fingerprint != fingerprint)
+        if (reader.Read(assetsPath).Fingerprint != row.AssetsFingerprint)
             return new(EvidenceStatus.Unknown, null, "Assets changed while reading selected skill.");
         return content.Status == EvidenceStatus.Complete && string.IsNullOrWhiteSpace(content.Content)
             ? new(EvidenceStatus.Unknown, null, "Inspector returned an empty skill document.")

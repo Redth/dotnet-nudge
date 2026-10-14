@@ -16,7 +16,8 @@ public sealed record PackageAdvisory(string Url, int Severity, string Range, str
 public sealed record UpdateCandidate(NuGetVersion Version, string Kind, string Source,
     EvidenceStatus Compatibility, string? Diagnostic);
 public sealed record RemediationPath(IReadOnlyList<string> PackageIds, string DirectParent,
-    NuGetVersion? ParentCandidate, string? ParentSource);
+    NuGetVersion? ParentCandidate, string? ParentSource,
+    EvidenceStatus Coverage = EvidenceStatus.Unknown, string? Diagnostic = null);
 public sealed record PackageAssessment(PackageNode Package, EvidenceStatus Status,
     IReadOnlyList<PackageAdvisory> Advisories, IReadOnlyList<UpdateCandidate> Candidates,
     NuGetVersion? MinimalKnownFix, IReadOnlyList<RemediationPath> Paths, IReadOnlyList<string> Diagnostics)
@@ -24,10 +25,37 @@ public sealed record PackageAssessment(PackageNode Package, EvidenceStatus Statu
     public string SubjectKey => string.Join('|', Package.Project, Package.Framework,
         Package.RuntimeIdentifier ?? "", Package.Id.ToLowerInvariant());
     public string EvidenceRevision => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
-        string.Join('|', SubjectKey, Package.Version, Status,
-            string.Join(';', Advisories.Select(a => $"{a.AuditSource}:{a.Url}:{a.Range}")),
-            string.Join(';', Candidates.Select(c => $"{c.Source}:{c.Version}:{c.Compatibility}")),
-            string.Join(';', Diagnostics)))));
+        JsonSerializer.Serialize(new
+        {
+            SubjectKey,
+            Version = Package.Version.ToNormalizedString(),
+            Status,
+            MinimalKnownFix = MinimalKnownFix?.ToNormalizedString(),
+            Advisories = Advisories.Select(a => new { a.AuditSource, a.Url, a.Range, a.Severity })
+                .OrderBy(a => a.AuditSource, StringComparer.Ordinal)
+                .ThenBy(a => a.Url, StringComparer.Ordinal).ThenBy(a => a.Range, StringComparer.Ordinal)
+                .ThenBy(a => a.Severity).ToArray(),
+            Candidates = Candidates.Select(c => new
+                { Version = c.Version.ToNormalizedString(), c.Kind, c.Source, c.Compatibility, c.Diagnostic })
+                .OrderBy(c => c.Source, StringComparer.Ordinal)
+                .ThenBy(c => c.Version, StringComparer.Ordinal)
+                .ThenBy(c => c.Kind, StringComparer.Ordinal)
+                .ThenBy(c => c.Compatibility)
+                .ThenBy(c => c.Diagnostic, StringComparer.Ordinal).ToArray(),
+            Paths = Paths.Select(p => new
+                {
+                    PackageIds = p.PackageIds.ToArray(), p.DirectParent,
+                    ParentCandidate = p.ParentCandidate?.ToNormalizedString(), p.ParentSource,
+                    p.Coverage, p.Diagnostic
+                })
+                .OrderBy(p => string.Join('\0', p.PackageIds), StringComparer.Ordinal)
+                .ThenBy(p => p.DirectParent, StringComparer.Ordinal)
+                .ThenBy(p => p.ParentCandidate, StringComparer.Ordinal)
+                .ThenBy(p => p.ParentSource, StringComparer.Ordinal)
+                .ThenBy(p => p.Coverage)
+                .ThenBy(p => p.Diagnostic, StringComparer.Ordinal).ToArray(),
+            Diagnostics = Diagnostics.OrderBy(d => d, StringComparer.Ordinal).ToArray()
+        }))));
     public bool RequiresConsentForMutation => true;
     public DateTimeOffset RetrievedAt { get; init; }
 }
@@ -131,7 +159,7 @@ public sealed class PackageIntelligence
                     (includePrerelease || !m.Identity.Version.IsPrerelease)).OrderBy(m => m.Identity.Version))
                 {
                     var version = candidate.Identity.Version;
-                    var compatibility = EvidenceStatus.Partial;
+                    var compatibility = EvidenceStatus.Unknown;
                     string? reason = "Candidate dependency/framework evidence unavailable.";
                     if (candidate.DependencySets is { } dependencyGroups)
                     {
@@ -163,11 +191,11 @@ public sealed class PackageIntelligence
                 diagnostics.Add($"Package source {source.Name} unavailable ({ex.GetType().Name}); authentication or feed access may be required.");
             }
         }
-        var distinct = candidates.OrderBy(c => c.Version)
-            .DistinctBy(c => c.Version).ToArray();
+        var distinct = candidates.OrderBy(c => c.Version).ThenBy(c => c.Source, StringComparer.Ordinal)
+            .DistinctBy(c => (c.Version, c.Source)).ToArray();
         // Do not claim a security fix if any audit partition or source failed.
         var fix = diagnostics.Count == 0 && advisories.Count > 0
-            ? distinct.FirstOrDefault(c => c.Compatibility != EvidenceStatus.Unknown &&
+            ? distinct.FirstOrDefault(c => c.Compatibility == EvidenceStatus.Partial &&
                 ranges.All(r => !r.Satisfies(c.Version)))?.Version : null;
         IReadOnlyList<RemediationPath> paths = package.Direct ? [] : FindPaths(package, graph);
         if (fix is not null && paths.Count > 0)
@@ -189,20 +217,43 @@ public sealed class PackageIntelligence
                 p.Id.Equals(path.DirectParent, StringComparison.OrdinalIgnoreCase));
             if (path.PackageIds.Count != 2)
             {
-                output.Add(path);
+                diagnostics.Add($"Indirect remediation path through {path.DirectParent} needs a restore trial.");
+                output.Add(path with { Coverage = EvidenceStatus.Partial,
+                    Diagnostic = "Indirect dependency constraints are not evaluated." });
                 continue; // An indirect path needs a restore trial before a parent version can be attributed.
             }
+            var sources = _policy.Allowed(parent.Id, approvedSources);
+            if (sources.Count == 0)
+            {
+                diagnostics.Add($"No permitted mapped/explicit source for direct parent {parent.Id}.");
+                output.Add(path with { Coverage = EvidenceStatus.Unknown,
+                    Diagnostic = "Direct-parent metadata source is not permitted." });
+                continue;
+            }
             var choices = new List<(NuGetVersion Version, string Source)>();
-            foreach (var source in _policy.Allowed(parent.Id, approvedSources))
+            var incomplete = false;
+            foreach (var source in sources)
                 try
                 {
                     var repo = Repository.Factory.GetCoreV3(source);
                     using var cache = new SourceCacheContext { NoCache = true };
                     var resource = await repo.GetResourceAsync<PackageMetadataResource>(token);
-                    var metadata = await resource.GetMetadataAsync(parent.Id, false, false, cache,
-                        NullLogger.Instance, token);
+                    var metadata = (await resource.GetMetadataAsync(parent.Id, false, false, cache,
+                        NullLogger.Instance, token)).ToArray();
+                    if (metadata.Length == 0)
+                    {
+                        diagnostics.Add($"Direct parent {parent.Id} metadata unavailable from {source.Name}.");
+                        incomplete = true;
+                        continue;
+                    }
                     foreach (var item in metadata.Where(m => m.Identity.Version > parent.Version))
                     {
+                        if (item.DependencySets is null)
+                        {
+                            incomplete = true;
+                            diagnostics.Add($"Direct parent {parent.Id}@{item.Identity.Version} dependency metadata is missing.");
+                            continue;
+                        }
                         var nearest = new FrameworkReducer().GetNearest(NuGetFramework.ParseFolder(target.Framework),
                             item.DependencySets.Select(g => g.TargetFramework));
                         var group = item.DependencySets.FirstOrDefault(g => g.TargetFramework.Equals(nearest));
@@ -214,10 +265,13 @@ public sealed class PackageIntelligence
                 }
                 catch (Exception ex) when (FeedFailure(ex))
                 {
+                    incomplete = true;
                     diagnostics.Add($"Direct parent {parent.Id} source {source.Name} unavailable ({ex.GetType().Name}); authentication or feed access may be required.");
                 }
             var best = choices.OrderBy(c => c.Version).FirstOrDefault();
-            output.Add(path with { ParentCandidate = best.Version, ParentSource = best.Source });
+            output.Add(path with { ParentCandidate = best.Version, ParentSource = best.Source,
+                Coverage = incomplete ? EvidenceStatus.Partial : EvidenceStatus.Complete,
+                Diagnostic = incomplete ? "Direct-parent source or dependency metadata is incomplete." : null });
         }
         return output;
     }
@@ -234,7 +288,7 @@ public sealed class PackageIntelligence
         using var cache = new SourceCacheContext { NoCache = true };
         var result = await resource.GetVulnerabilityInfoAsync(cache, NullLogger.Instance, token);
         if (result.Exceptions is not null || result.KnownVulnerabilities is null)
-            throw new InvalidDataException($"Incomplete advisory partitions: {result.Exceptions?.Message}");
+            throw new InvalidDataException("Incomplete advisory partitions.");
         _advisoryCache[source.Source] = (_now(), result.KnownVulnerabilities);
         return result.KnownVulnerabilities;
     }
@@ -244,7 +298,7 @@ public sealed class PackageIntelligence
         : next.Minor != current.Minor ? "minor" : "patch";
 
     private static bool FeedFailure(Exception ex) => ex is NuGetProtocolException or
-        HttpRequestException or IOException or UnauthorizedAccessException or
+        HttpRequestException or IOException or InvalidDataException or UnauthorizedAccessException or
         JsonException or InvalidOperationException ||
         ex is AggregateException aggregate && !aggregate.InnerExceptions.Any(e => e is OperationCanceledException);
 

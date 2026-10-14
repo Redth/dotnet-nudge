@@ -164,41 +164,43 @@ public sealed class GraphTransitions
             return [];
         if (_previous is null)
         {
+            Save(graph, _sequence);
             _previous = graph;
-            Save();
             return [];
         }
         var old = _previous.Packages.ToDictionary(Key);
         var current = graph.Packages.ToDictionary(Key);
         var changes = new List<GraphChange>();
+        var nextSequence = _sequence;
         foreach (var key in old.Keys.Union(current.Keys).OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
         {
             old.TryGetValue(key, out var previous);
             current.TryGetValue(key, out var next);
             if (previous is null || next is null)
-                changes.Add(new GraphChange(++_sequence, previous is null
+                changes.Add(new GraphChange(++nextSequence, previous is null
                     ? GraphChangeKind.Added : GraphChangeKind.Removed, previous, next, origin));
             else
             {
                 if (previous.Version != next.Version)
-                    changes.Add(new GraphChange(++_sequence, previous.Version < next.Version
+                    changes.Add(new GraphChange(++nextSequence, previous.Version < next.Version
                         ? GraphChangeKind.Upgraded : GraphChangeKind.Downgraded, previous, next, origin));
                 if (previous.Direct != next.Direct)
-                    changes.Add(new GraphChange(++_sequence, GraphChangeKind.RoleChanged, previous, next, origin));
+                    changes.Add(new GraphChange(++nextSequence, GraphChangeKind.RoleChanged, previous, next, origin));
             }
         }
+        Save(graph, nextSequence);
         _previous = graph;
-        Save();
+        _sequence = nextSequence;
         return changes;
     }
 
-    private void Save()
+    private void Save(PackageGraph graph, long sequence)
     {
-        if (_stateFile is null || _previous is null) return;
+        if (_stateFile is null) return;
         var parent = Path.GetDirectoryName(Path.GetFullPath(_stateFile))!;
         Directory.CreateDirectory(parent);
         var temp = Path.Combine(parent, Path.GetFileName(_stateFile) + "." + Guid.NewGuid().ToString("N") + ".tmp");
-        var stored = new StoredGraph(_sequence, _previous.Packages.Select(p =>
+        var stored = new StoredGraph(sequence, graph.Packages.Select(p =>
             new StoredNode(p.Project, p.Framework, p.RuntimeIdentifier, p.Id, p.Version.ToString(),
                 p.Direct, p.RequestedRange, p.PackagePath, p.Source, p.Dependencies.ToArray(),
                 p.CentrallyManaged, p.ContentHash)).ToArray());
