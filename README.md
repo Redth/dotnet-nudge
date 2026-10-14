@@ -49,6 +49,11 @@ dotnet run --project src/DotnetNudge/DotnetNudge.csproj -- status --workspace "$
   The checked-in command launcher uses Bash; on Windows, Claude Code hook use
   requires a compatible Bash shell. The PowerShell launcher is selected by
   Copilot CLI on Windows.
+- **Interactive advice:** hooks, MCP tool descriptions and shared skills direct
+  the host agent to use Copilot's `ask_user` or Claude Code's `AskUserQuestion`
+  for native multiple-choice prompts, not text menus. Read-only review does not
+  approve changes or trials. Hosts without interactive question support remain
+  report-only; the plugin cannot force the host to render a picker.
 - Hooks preserve the engine's stdout, stderr, stdin, and exit status. A missing
   engine produces one short setup message at most once in the writable state
   directory, without writing to the installed plugin cache. An unusable state

@@ -43,9 +43,18 @@ public static class HookAdapter
             .OrderBy(f => f.Finding.Priority).Select(f => f.Finding)
             .FirstOrDefault(f => state.TryLease(repository, f, owner, TimeSpan.FromMinutes(2)));
         if (finding is null) return "{}";
+        var questionTool = host == "copilot" ? "ask_user" : "AskUserQuestion";
         var context = $"dotnet-nudge: {finding.Kind} finding {finding.Id} (revision {finding.Revision}) " +
             $"has a candidate {finding.Candidate}. Assessment: {finding.Assessment}. " +
-            "Use `dotnet-nudge status --workspace PATH --json` for evidence; ask before changes.";
+            "Read current evidence with `nudge_context` or `dotnet-nudge status --workspace PATH --json`. " +
+            "Follow the nudge-maintain skill's interactive-question guidance. " +
+            "For this newly hook-delivered finding, delivered-recently is a delivery cooldown, not a " +
+            "user answer; offer it once if the current ID and revision still match. " +
+            $"When offering this finding, call the host's native `{questionTool}` tool with one " +
+            "single-select question and 2-4 concrete choices, including Not now; do not print a choice menu in chat. " +
+            "Review is read-only, not approval for changes or a trial. Obtain explicit approval for exact " +
+            "reminder decisions before recording them. If the question tool is unavailable or the session " +
+            "is noninteractive, report the finding without assuming an answer or recording a decision.";
         if (Encoding.UTF8.GetByteCount(context) > ContextLimitBytes)
             throw new InvalidDataException("Hook context exceeds 4 KiB.");
         var output = host == "copilot"

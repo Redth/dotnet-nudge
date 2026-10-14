@@ -51,6 +51,12 @@ uses `hookSpecificOutput`. Copilot drops command-hook output from
 injection. Neither adapter invokes a model, starts restore/build, installs
 tools, or blocks turn completion.
 
+Finding context explicitly directs the host agent to its native question tool,
+`ask_user` for Copilot or `AskUserQuestion` for Claude Code. Shared skills and
+MCP tool descriptions reinforce that guidance; hooks themselves cannot render
+the picker. See [native maintenance questions](integration.md#native-maintenance-questions)
+for noninteractive behavior, approval boundaries and validation limits.
+
 The Bash and PowerShell wrappers call the same Node.js launcher as MCP and CLI
 commands, `scripts/run.cjs`. Node.js 22 or newer must be on the host's `PATH`.
 The launcher resolves `NUDGE_ENGINE_PATH`, plugin `bin/`, the selected state

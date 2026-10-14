@@ -149,3 +149,32 @@ high/partial evidence without another scan. Shell, write, URL, trial, and
 decision actions were denied during that acceptance. This verifies that
 specific Copilot headless host path, not Claude Code, IDE hosts, other OS
 conversations, or model acceptance of suggested changes.
+
+## Native maintenance questions
+
+Hook context names the receiving host's native user-input tool:
+`ask_user` for Copilot and `AskUserQuestion` for Claude Code. MCP advice and
+decision tool descriptions carry the same routing guidance, so a direct MCP
+assessment need not rely on a preceding hook. All four shared skills link to
+the [interactive-question contract](../plugins/dotnet-nudge/skills/nudge-maintain/references/interactive-questions.md),
+including the host-specific argument shapes and action/approval boundaries.
+
+The host agent should read current evidence, briefly explain one finding and
+call its actual tool with one single-select question and 2-4 concrete choices
+including `Not now`. A chat menu or JSON printed in a reply is not a picker.
+Review is read-only; snooze/skip/category mutations require explicit approval
+of their exact scope and a current revision. No answer, dismissal, cancellation
+or `Not now` records a durable decision. Trial approval still requires the
+human's persisted-plan revision/digest confirmation in the interactive CLI.
+
+This is host-agent guidance, not a new hook output schema or server-side MCP
+elicitation implementation. Hooks and MCP never invoke a host tool themselves.
+If the tool is unavailable, denied or the session is noninteractive, report the
+evidence without inferring consent or executing an action. Existing delivery
+leases/cooldowns are unchanged; context delivery does not prove that a question
+was shown. A freshly hook-delivered ID/revision may be offered once despite its
+`delivered-recently` status, which records that context delivery, not an answer.
+Stale evidence and durable snooze/skip/mute decisions still prevent unsolicited
+questions. Contract and protocol tests check routing and schemas, not live GUI
+rendering or model compliance. The headless acceptance above does not certify
+interactive question presentation.

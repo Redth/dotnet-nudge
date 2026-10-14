@@ -44,6 +44,12 @@ public sealed class McpStateDirectory(string path)
 [McpServerToolType]
 public sealed class NudgeTools(McpStateDirectory location)
 {
+    const string QuestionGuidance = " When offering maintenance choices, follow nudge-maintain's " +
+        "interactive-question guidance and call the host's native AskUserQuestion (Claude Code) or " +
+        "ask_user (Copilot) tool with one single-select question and 2-4 concrete choices including " +
+        "Not now, not a choice menu in chat. Review is not approval for changes or trials. If the tool " +
+        "is unavailable or the session is noninteractive, report only; never assume consent.";
+
     async Task<string> WithServiceAsync(Func<NudgeService, Task<string>> operation)
     {
         using var state = new NudgeState(location.Path);
@@ -75,7 +81,7 @@ public sealed class NudgeTools(McpStateDirectory location)
         return root;
     }
 
-    [McpServerTool(Name = "nudge_status"), Description("Read cached findings and scan coverage for an admitted workspace.")]
+    [McpServerTool(Name = "nudge_status"), Description("Read cached findings and scan coverage for an admitted workspace." + QuestionGuidance)]
     public async Task<string> Status(McpServer server, string workspace, CancellationToken cancellationToken)
     {
         var root = await RootAsync(server, workspace, cancellationToken);
@@ -83,7 +89,7 @@ public sealed class NudgeTools(McpStateDirectory location)
             JsonSerializer.Serialize(service.Status(root), Contract.Json)));
     }
 
-    [McpServerTool(Name = "nudge_scan"), Description("Explicitly perform a read-only scan of the exact workspace root.")]
+    [McpServerTool(Name = "nudge_scan"), Description("Explicitly perform a read-only scan of the exact workspace root." + QuestionGuidance)]
     public async Task<string> Scan(McpServer server, string workspace, CancellationToken cancellationToken)
     {
         var root = await RootAsync(server, workspace, cancellationToken);
@@ -92,7 +98,7 @@ public sealed class NudgeTools(McpStateDirectory location)
             JsonSerializer.Serialize(await service.ScanAsync(root, cancellationToken), Contract.Json));
     }
 
-    [McpServerTool(Name = "nudge_context"), Description("Read the evidence for a current finding without activating third-party instructions.")]
+    [McpServerTool(Name = "nudge_context"), Description("Read the evidence for a current finding without activating third-party instructions." + QuestionGuidance)]
     public async Task<string> Context(McpServer server, string workspace, string findingId,
         CancellationToken cancellationToken)
     {
@@ -117,7 +123,7 @@ public sealed class NudgeTools(McpStateDirectory location)
                 Contract.Json));
     }
 
-    [McpServerTool(Name = "nudge_package_assess"), Description("Metadata-only package/advisory assessment for one exact restored project/TFM/RID/package, after the user explicitly approves the named configured sources (including audit sources). Does not download packages or install skills.")]
+    [McpServerTool(Name = "nudge_package_assess"), Description("Metadata-only package/advisory assessment for one exact restored project/TFM/RID/package, after the user explicitly approves the named configured sources (including audit sources). Does not download packages or install skills." + QuestionGuidance)]
     public async Task<string> PackageAssess(McpServer server, string workspace,
         string project, string framework, string packageId, string[] approvedSources,
         bool acquisitionApproved, string? runtimeIdentifier = null,
@@ -132,7 +138,7 @@ public sealed class NudgeTools(McpStateDirectory location)
                 cancellationToken), Contract.Json));
     }
 
-    [McpServerTool(Name = "nudge_toolchains"), Description("Inspect offline workload/host evidence and observed local runtime servicing without installing SDKs or workloads.")]
+    [McpServerTool(Name = "nudge_toolchains"), Description("Inspect offline workload/host evidence and observed local runtime servicing without installing SDKs or workloads." + QuestionGuidance)]
     public async Task<string> Toolchains(McpServer server, string workspace,
         CancellationToken cancellationToken)
     {
@@ -141,7 +147,7 @@ public sealed class NudgeTools(McpStateDirectory location)
             JsonSerializer.Serialize(await service.ToolchainsAsync(root, cancellationToken), Contract.Json));
     }
 
-    [McpServerTool(Name = "nudge_decide"), Description("Record a versioned snooze, skip or category preference.")]
+    [McpServerTool(Name = "nudge_decide"), Description("Record a versioned snooze, skip or category preference only after the user's explicit approval of the exact finding ID, revision, action and any expiry." + QuestionGuidance)]
     public async Task<string> Decide(McpServer server, string workspace, string findingId,
         string revision, string action, string? until = null, CancellationToken cancellationToken = default)
     {
@@ -154,7 +160,7 @@ public sealed class NudgeTools(McpStateDirectory location)
             service.Decide(root, findingId, revision, choice, expiry), Contract.Json)));
     }
 
-    [McpServerTool(Name = "nudge_preferences"), Description("Read category preferences, disable with current finding evidence, or re-enable an already muted category by name.")]
+    [McpServerTool(Name = "nudge_preferences"), Description("Read category preferences, disable with current finding evidence, or re-enable an already muted category by name. Mutations require explicit user approval of the exact category and scope." + QuestionGuidance)]
     public async Task<string> Preferences(McpServer server, string workspace, string? findingId = null,
         string? revision = null, string? action = null, string? category = null,
         CancellationToken cancellationToken = default)
@@ -177,7 +183,7 @@ public sealed class NudgeTools(McpStateDirectory location)
         });
     }
 
-    [McpServerTool(Name = "nudge_trial"), Description("Propose/read a trial and execute only an already approved exact plan. Approval is unavailable via MCP; a human must confirm the persisted plan in an interactive CLI. No source checkout, global SDK, push or PR is changed.")]
+    [McpServerTool(Name = "nudge_trial"), Description("Propose/read a trial and execute only an already approved exact plan. Approval is unavailable via MCP; a human must confirm the persisted plan in an interactive CLI. No source checkout, global SDK, push or PR is changed." + QuestionGuidance)]
     public async Task<string> Trial(McpServer server, string workspace, string operation,
         string? id = null, int? revision = null, string? planJson = null,
         CancellationToken cancellationToken = default)
@@ -210,7 +216,7 @@ public sealed class NudgeTools(McpStateDirectory location)
         });
     }
 
-    [McpServerTool(Name = "nudge_register"), Description("Register an explicit workspace root and queue a durable read-only scan.")]
+    [McpServerTool(Name = "nudge_register"), Description("Register an explicit workspace root and queue a durable read-only scan." + QuestionGuidance)]
     public async Task<string> Register(McpServer server, string workspace, CancellationToken cancellationToken)
     {
         var root = await RootAsync(server, workspace, cancellationToken);

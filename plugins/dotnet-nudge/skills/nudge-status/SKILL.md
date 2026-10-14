@@ -16,6 +16,7 @@ description: Check dotnet-nudge availability and report only verified .NET maint
 
 ## User approval
 
+- When offering a next step, read [Interactive questions](../nudge-maintain/references/interactive-questions.md). Call the host's native `AskUserQuestion` (Claude Code) or `ask_user` (Copilot) with one single-select question and concrete choices, not a choice menu in chat. If the tool is unavailable or the session is noninteractive, report only; never infer consent. A status-only request does not require a question.
 - Assessment is not approval to change project files, install tooling, fetch candidate packages, or start a trial.
 - Before any supported mutating operation, state the exact target, files/tools affected, and execution scope, then obtain the user's approval.
 - Do not use a scan result as the revision token for a decision unless the current result includes that exact finding ID and revision.

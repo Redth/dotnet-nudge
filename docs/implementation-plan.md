@@ -833,10 +833,14 @@ Example question intents:
 > A new release candidate is available. Try a tooling-only build in an isolated
 > worktree, leaving the main workspace unchanged?
 
-Use the host's native question tool where possible. Choice sets can include
-review/try, snooze, skip this version, and disable this category. Details such as
-downloads, build execution, and a TFM migration require their own explicit scope;
-"review" is not consent to execute.
+Use the host's native question tool: Copilot `ask_user` or Claude Code
+`AskUserQuestion`, not a text menu in chat. Hooks, MCP descriptions and shared
+skills direct the host agent to ask one single-select question with 2-4 choices,
+including a no-change option. The [interactive-question contract](../plugins/dotnet-nudge/skills/nudge-maintain/references/interactive-questions.md)
+defines supported choices, exact decision scopes and report-only behavior when
+the tool is unavailable. Downloads, build execution, and a TFM migration require
+their own explicit scope; "review" is not consent to execute, and a question
+answer does not replace interactive CLI trial approval.
 
 ### Durable state
 

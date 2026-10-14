@@ -106,7 +106,7 @@ class PluginManifestTests(unittest.TestCase):
             {
                 "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
                 "name": "dotnet-nudge",
-                "version": "0.2.0",
+                "version": "0.2.1",
                 "description": "A .NET maintenance plugin with shared skills and host-specific hooks; engine actions remain explicit.",
                 "author": {"name": "Redth"},
                 "repository": "https://github.com/Redth/dotnet-nudge",
@@ -127,6 +127,7 @@ class PluginManifestTests(unittest.TestCase):
                 "keywords",
             },
         )
+        self.assertEqual(portable["version"], entry["version"])
 
         claude = read_json(plugin_dir / ".claude-plugin" / "plugin.json")
         self.assertEqual(
@@ -202,6 +203,63 @@ class PluginManifestTests(unittest.TestCase):
         self.assertIn("revision and SHA-256 digest", trial_skill)
         self.assertIn("MCP `approve` is refused", trial_skill)
         self.assertIn("not an OS sandbox", trial_skill)
+
+    def test_shared_native_question_guidance_and_tool_argument_shapes(self) -> None:
+        reference = resolve_contained(
+            PLUGIN, "skills/nudge-maintain/references/interactive-questions.md"
+        )
+        for name in ("nudge-maintain", "nudge-status", "nudge-preferences", "nudge-trial"):
+            with self.subTest(skill=name):
+                directory = PLUGIN / "skills" / name
+                content = (directory / "SKILL.md").read_text(encoding="utf-8")
+                link = next(
+                    line.split("[Interactive questions](", 1)[1].split(")", 1)[0]
+                    for line in content.splitlines()
+                    if "[Interactive questions](" in line
+                )
+                self.assertEqual((directory / link).resolve(), reference)
+                self.assertIn("`AskUserQuestion` (Claude Code)", content)
+                self.assertIn("`ask_user` (Copilot)", content)
+                self.assertIn("not a choice menu in chat", content)
+                self.assertIn("noninteractive, report only; never infer consent", content)
+
+        guidance = reference.read_text(encoding="utf-8")
+        examples = [
+            json.loads(block.split("```", 1)[0])
+            for block in guidance.split("```json\n")[1:]
+        ]
+        self.assertEqual(len(examples), 2)
+        copilot, claude = examples
+        self.assertEqual(set(copilot), {"question", "choices"})
+        self.assertEqual(set(claude), {"questions"})
+        self.assertEqual(len(claude["questions"]), 1)
+        question = claude["questions"][0]
+        self.assertEqual(set(question), {"question", "header", "multiSelect", "options"})
+        self.assertEqual(question["question"], copilot["question"])
+        self.assertLessEqual(len(question["header"]), 12)
+        self.assertFalse(question["multiSelect"])
+        self.assertGreaterEqual(len(copilot["choices"]), 2)
+        self.assertLessEqual(len(copilot["choices"]), 4)
+        self.assertEqual(
+            [option["label"] for option in question["options"]], copilot["choices"]
+        )
+        self.assertIn("Not now", copilot["choices"])
+        self.assertNotIn("Other", copilot["choices"])
+        for option in question["options"]:
+            self.assertEqual(set(option), {"label", "description"})
+            self.assertTrue(option["description"])
+        for boundary in (
+            "Offer only when a concrete candidate exists",
+            "Cancellation, dismissal and no answer also grant no consent",
+            "verify the ID and revision still match",
+            "the hook already recorded\ncontext delivery",
+            "Offer that exact hook finding once",
+            "`scan-pending`, `snoozed`, `version-skipped` and `category-disabled` still block",
+            "a native question does not bypass it",
+            "noninteractive/headless",
+            "Hooks deliver context, not a verified question presentation or user answer",
+        ):
+            self.assertIn(boundary, guidance)
 
     def test_one_hook_configuration_and_exact_host_event_mapping(self) -> None:
         copilot = read_json(PLUGIN / "com.github.copilot/hooks/hooks.json")

@@ -13,6 +13,7 @@ description: Review exact-approved .NET upgrade trials and their evidence and is
 
 ## User approval
 
+- Before offering trial choices, read [Interactive questions](../nudge-maintain/references/interactive-questions.md). Call the host's native `AskUserQuestion` (Claude Code) or `ask_user` (Copilot) with one single-select question and concrete choices, not a choice menu in chat. If the tool is unavailable or the session is noninteractive, report only; never infer consent. A question answer cannot replace the interactive terminal's exact trial approval.
 - A trial restores, builds, tests, or otherwise executes trusted project code in separate Git worktrees. Git worktrees are not an OS sandbox. Do not start one without approval of the exact project, candidate, commands, environment, and budget.
 - Approval for an assessment does not authorize a trial or changes to the original checkout.
 

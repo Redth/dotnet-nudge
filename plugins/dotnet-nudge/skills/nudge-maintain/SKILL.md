@@ -16,6 +16,7 @@ description: Review .NET maintenance evidence and diagnose automatic dotnet-nudg
 
 ## User approval
 
+- Before offering maintenance choices, read [Interactive questions](references/interactive-questions.md). Call the host's native `AskUserQuestion` (Claude Code) or `ask_user` (Copilot) with one single-select question and concrete choices, not a choice menu in chat. If the tool is unavailable or the session is noninteractive, report only; never infer consent.
 - Automatic setup installs only this plugin's verified engine from its repository release manifest. It does not authorize SDK/workload installation, package changes, project commands or trials. Before any such supported change, name the exact package/version or tool, files and commands involved, and whether it would download or execute anything. Ask for approval for that bounded action.
 - For an unmapped package metadata query, first ask the user to approve the exact project, TFM, optional RID, package ID, and configured candidate/audit source names. Only then use `nudge_package_assess` or `dotnet-nudge package-assess` with `--approve-metadata`; this authorizes metadata reads, not downloading a package or running a trial.
 - A request to review a finding is not permission to execute a change.

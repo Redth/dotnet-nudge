@@ -13,6 +13,7 @@ description: Capture explicit dotnet-nudge reminder choices without claiming uns
 
 ## User approval
 
+- Before asking for a reminder choice, read [Interactive questions](../nudge-maintain/references/interactive-questions.md). Call the host's native `AskUserQuestion` (Claude Code) or `ask_user` (Copilot) with one single-select question and concrete choices, not a choice menu in chat. If the tool is unavailable or the session is noninteractive, report only; never infer consent.
 - Ask before changing reminder behavior. Name the category or finding and the requested duration or version boundary.
 - A preference for fewer reminders is not approval to suppress security findings or mutate project/tool state.
 

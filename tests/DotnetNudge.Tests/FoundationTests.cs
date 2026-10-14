@@ -516,6 +516,49 @@ public sealed class FoundationTests
         Assert.Equal("{}", HookAdapter.Handle("copilot", "session-start", "", state));
     }
 
+    [Theory]
+    [InlineData("copilot", "session-start", "ask_user")]
+    [InlineData("copilot", "post-tool-use", "ask_user")]
+    [InlineData("claude", "session-start", "AskUserQuestion")]
+    [InlineData("claude", "prompt-submit", "AskUserQuestion")]
+    [InlineData("claude", "post-tool-use", "AskUserQuestion")]
+    public void HookAdviceRequestsNativeChoicesWithoutRecordingAnAnswer(
+        string host, string eventName, string questionTool)
+    {
+        using var fixture = new Fixture();
+        using var state = fixture.State();
+        var report = Report(fixture, Finding());
+        state.Register(fixture.Root, TimeSpan.FromMinutes(15));
+        state.QueueScan(report.Workspace.WorkspaceId);
+        state.FinishScan(state.LeaseScan("scanner")!, "scanner", report, null,
+            NudgeState.WorkspaceFingerprint(fixture.Root));
+        var payload = JsonSerializer.Serialize(new { cwd = fixture.Root, session_id = "question" });
+        using var output = JsonDocument.Parse(HookAdapter.Handle(host, eventName, payload, state));
+        var container = host == "copilot" ? output.RootElement :
+            output.RootElement.GetProperty("hookSpecificOutput");
+        var context = container.GetProperty("additionalContext").GetString()!;
+        Assert.Contains($"`{questionTool}`", context);
+        Assert.DoesNotContain(host == "copilot" ? "AskUserQuestion" : "ask_user", context);
+        Assert.Contains("nudge-maintain", context);
+        Assert.Contains("delivered-recently is a delivery cooldown, not a user answer", context);
+        Assert.Contains("offer it once if the current ID and revision still match", context);
+        Assert.Contains("single-select", context);
+        Assert.Contains("2-4 concrete choices, including Not now", context);
+        Assert.Contains("do not print a choice menu in chat", context);
+        Assert.Contains("Review is read-only, not approval", context);
+        Assert.Contains("explicit approval for exact reminder decisions", context);
+        Assert.Contains("noninteractive", context);
+        Assert.Contains("without assuming an answer or recording a decision", context);
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(context) <= HookAdapter.ContextLimitBytes);
+        Assert.False(output.RootElement.TryGetProperty("modifiedPrompt", out _));
+        Assert.Null(state.Suppression(report.Workspace.RepositoryId, Finding()));
+        var current = Assert.Single(state.Status(report.Workspace.RepositoryId,
+            report.Workspace.WorktreeId, report.Workspace.WorkspaceId).Findings);
+        Assert.False(current.Eligible);
+        Assert.Equal("delivered-recently", current.Suppression);
+        Assert.Equal("{}", HookAdapter.Handle(host, "post-tool-use", payload, state));
+    }
+
     [Fact]
     public async Task CliFixtureRoundtripPersistsSuppression()
     {

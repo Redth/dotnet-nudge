@@ -110,6 +110,22 @@ public sealed class ProtocolTests
             Assert.Contains(tools, t => t.Name == "nudge_toolchains");
             Assert.Contains(tools, t => t.Name == "nudge_preferences");
             Assert.Contains(tools, t => t.Name == "nudge_package_assess");
+            foreach (var name in new[] { "nudge_status", "nudge_scan", "nudge_context",
+                "nudge_package_assess", "nudge_toolchains", "nudge_decide", "nudge_preferences",
+                "nudge_trial", "nudge_register" })
+            {
+                var description = Assert.Single(tools, t => t.Name == name).Description!;
+                Assert.Contains("AskUserQuestion (Claude Code)", description);
+                Assert.Contains("ask_user (Copilot)", description);
+                Assert.Contains("single-select", description);
+                Assert.Contains("Not now, not a choice menu in chat", description);
+                Assert.Contains("Review is not approval for changes or trials", description);
+                Assert.Contains("noninteractive, report only; never assume consent", description);
+            }
+            Assert.Contains("explicit approval", Assert.Single(tools,
+                t => t.Name == "nudge_decide").Description!);
+            Assert.Contains("a human must confirm the persisted plan in an interactive CLI",
+                Assert.Single(tools, t => t.Name == "nudge_trial").Description!);
             async Task<JsonDocument> Call(string tool, Dictionary<string, object?> args)
             {
                 var result = await client.CallToolAsync(tool, args, cancellationToken: timeout.Token);
