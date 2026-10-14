@@ -367,6 +367,7 @@ class LauncherTests(unittest.TestCase):
                     "Setup state must not be written into the plugin cache.",
                 )
 
+    @unittest.skipIf(os.name == "nt", "Bash is not the native Windows launcher")
     def test_bash_resolves_a_versioned_engine_from_user_data(self) -> None:
         versioned_engine_dir = self.state / "engine" / "1.2.3" / expected_rid()
         versioned_engine_dir.mkdir(parents=True)
@@ -378,6 +379,20 @@ class LauncherTests(unittest.TestCase):
         env = self.base_env()
         env.pop("NUDGE_ENGINE_PATH")
         result = self.run_bash("copilot", "session-start", env)
+        self.assert_fixture_passthrough(result, "copilot", "session-start")
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell is the native Windows launcher")
+    def test_powershell_resolves_a_versioned_engine_from_user_data(self) -> None:
+        versioned_engine_dir = self.state / "engine" / "1.2.3" / expected_rid()
+        versioned_engine_dir.mkdir(parents=True)
+        (self.state / "engine" / "current").write_text(
+            f"1.2.3/{expected_rid()}\n",
+            encoding="utf-8",
+        )
+        shutil.copy2(sys.executable, versioned_engine_dir / "dotnet-nudge.exe")
+        env = self.base_env()
+        env.pop("NUDGE_ENGINE_PATH")
+        result = self.run_powershell("copilot", "session-start", env)
         self.assert_fixture_passthrough(result, "copilot", "session-start")
 
 
