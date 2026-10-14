@@ -70,11 +70,15 @@ public sealed class TrialGit
                 await Run("show", $"{plan.SourceCommit}:{name}"),
                 @"\bfilter\s*=", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
                 throw new TrialException("Git content filters (including LFS) are unsupported");
-        foreach (var name in tracked.Where(name =>
-                     name.EndsWith("proj", StringComparison.OrdinalIgnoreCase) ||
-                     name.EndsWith(".props", StringComparison.OrdinalIgnoreCase) ||
-                     name.EndsWith(".targets", StringComparison.OrdinalIgnoreCase)))
+        var trackedPaths = tracked.ToHashSet(StringComparer.Ordinal);
+        var pending = new Queue<string>(tracked.Where(name =>
+            name.EndsWith("proj", StringComparison.OrdinalIgnoreCase) ||
+            name.EndsWith(".props", StringComparison.OrdinalIgnoreCase) ||
+            name.EndsWith(".targets", StringComparison.OrdinalIgnoreCase)));
+        var inspected = new HashSet<string>(StringComparer.Ordinal);
+        while (pending.TryDequeue(out var name))
         {
+            if (!inspected.Add(name)) continue;
             var text = await Run("show", $"{plan.SourceCommit}:{name}");
             XDocument document;
             try
@@ -94,9 +98,11 @@ public sealed class TrialGit
                     throw new TrialException($"Indeterminate or absolute project import/reference in {name}: {value}");
                 var target = Path.GetFullPath(Path.Combine(repo, Path.GetDirectoryName(name) ?? "",
                     value.Replace('\\', Path.DirectorySeparatorChar)));
+                var relative = Path.GetRelativePath(repo, target).Replace('\\', '/');
                 if (!target.StartsWith(repo + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
-                    !tracked.Contains(Path.GetRelativePath(repo, target).Replace('\\', '/'), StringComparer.Ordinal))
+                    !trackedPaths.Contains(relative))
                     throw new TrialException($"External or uncommitted project import/reference in {name}: {value}");
+                pending.Enqueue(relative);
             }
         }
         CheckExternalBuildConfig(plan);

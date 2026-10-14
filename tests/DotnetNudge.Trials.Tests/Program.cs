@@ -29,6 +29,7 @@ var tests = new (string Name, Func<Task> Run)[] {
     ("preflight reads committed attributes", CommittedAttributes),
     ("exclusive ownership and non-overlapping roots", Ownership),
     ("committed project imports are contained", Imports),
+    ("nested arbitrary-extension imports are contained", NestedImports),
     ("original dirty content and HEAD are fingerprinted", OriginalChanges),
     ("SDK copies share one disk budget", AggregateBudget),
     ("exact-ref cleanup retries and foreign checkout guard", CleanupRetry)
@@ -492,6 +493,59 @@ async Task Imports()
     var blocked = await external.Runner.ExecuteAsync(ancestorPlan.Id, 1);
     Check(blocked.Phase == TrialPhase.Blocked && blocked.BlockReason!.Contains("External ancestor"),
         "external ancestor Directory.Build.targets accepted");
+}
+
+async Task NestedImports()
+{
+    foreach (var (name, nested) in new[] {
+                 ("absolute-import", "<Project><Import Project=\"/shared/outside.targets\" /></Project>"),
+                 ("external-reference", "<Project><ItemGroup><ProjectReference Include=\"../../../outside.csproj\" /></ItemGroup></Project>"),
+                 ("dynamic-reference", "<Project><ItemGroup><ProjectReference Include=\"$(ExternalProject)\" /></ItemGroup></Project>"),
+                 ("uncommitted-import", "<Project><Import Project=\"missing.xml\" /></Project>")
+             })
+    {
+        var f = await Fixture.Create("nested-" + name);
+        var build = Path.Combine(f.Repo, "build");
+        var deeper = Path.Combine(build, "deeper");
+        Directory.CreateDirectory(deeper);
+        File.WriteAllText(Path.Combine(f.Repo, "fixture.csproj"),
+            "<Project><Import Project=\"build/common.xml\" /></Project>");
+        File.WriteAllText(Path.Combine(build, "common.xml"),
+            "<Project><Import Project=\"deeper/level.data\" /></Project>");
+        var leaf = Path.Combine(deeper, "level.data");
+        File.WriteAllText(leaf, nested);
+        await Fixture.Command(f.Repo, "git", "add", "fixture.csproj", "build/common.xml", "build/deeper/level.data");
+        await Fixture.Command(f.Repo, "git", "-c", "user.email=fixture@example.invalid", "-c", "user.name=Fixture",
+            "commit", "-qm", name);
+        File.WriteAllText(leaf, "<Project />");
+        var plan = f.Plan() with { SourceCommit = await Fixture.Command(f.Repo, "git", "rev-parse", "HEAD") };
+        f.Runner.Propose(plan);
+        f.Runner.Approve(plan.Id, 1);
+        var result = await f.Runner.ExecuteAsync(plan.Id, 1);
+        Check(result.Phase == TrialPhase.Blocked && result.BlockReason!.Contains("import/reference") &&
+            result.Report is null, $"committed nested {name} was not rejected before worktree creation");
+        Check(File.ReadAllText(leaf) == "<Project />", "original nested XML was changed");
+    }
+
+    var cycle = await Fixture.Create("nested-cycle");
+    var directory = Path.Combine(cycle.Repo, "build");
+    Directory.CreateDirectory(directory);
+    File.WriteAllText(Path.Combine(cycle.Repo, "fixture.csproj"),
+        "<Project><Import Project=\"build/common.xml\" /></Project>");
+    File.WriteAllText(Path.Combine(directory, "common.xml"),
+        "<Project><Import Project=\"loop.data\" /></Project>");
+    File.WriteAllText(Path.Combine(directory, "loop.data"),
+        "<Project><Import Project=\"common.xml\" /></Project>");
+    await Fixture.Command(cycle.Repo, "git", "add", "fixture.csproj", "build/common.xml", "build/loop.data");
+    await Fixture.Command(cycle.Repo, "git", "-c", "user.email=fixture@example.invalid", "-c", "user.name=Fixture",
+        "commit", "-qm", "cycle");
+    var approved = cycle.Plan() with {
+        SourceCommit = await Fixture.Command(cycle.Repo, "git", "rev-parse", "HEAD")
+    };
+    cycle.Runner.Propose(approved);
+    cycle.Runner.Approve(approved.Id, 1);
+    var complete = await cycle.Runner.ExecuteAsync(approved.Id, 1);
+    Check(complete.Phase == TrialPhase.ReadyForReview, complete.BlockReason ?? "contained import cycle blocked");
 }
 
 async Task OriginalChanges()

@@ -55,6 +55,9 @@ fingerprinted before and after execution; a changed original blocks the
 comparison, even when porcelain status is unchanged. Sparse checkout,
 submodules, symlinks, LFS, uncommitted/escaping/indeterminate imports and
 project references, and external ancestor MSBuild config currently block.
+Committed literal imports/references are followed transitively through tracked
+XML files of any extension, with cycles visited once; the original checkout's
+dirty copies cannot hide a committed nested escape.
 Trial commands may target only approved project paths. Built assemblies must
 exist in each stage's local `bin/`, are hashed, and each `test --no-build`
 requires a preceding verified build of the same project with an unchanged
