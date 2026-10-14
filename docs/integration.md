@@ -44,7 +44,10 @@ start/prompt submission; session end closes the active registration and
 releases delivery leases. Hooks remain cached-only and never perform scans.
 The MCP process reconciles changed project/configuration/assets and local Git
 metadata every minute for active registrations, leases a queued scan per exact root, and
-retries read-only failures at most three times. It exits with its host; there
+retries read-only failures at most three times. Successful scans seed a
+fingerprint of inputs captured before the scan, so repeat hook sessions do
+not queue identical work; if inputs change during a scan, reconciliation
+queues the new state. It exits with its host; there
 is no detached daemon. If MCP is lazily started or absent, cached status
 reports pending coverage and an explicit `scan` is available. When a scan is
 pending or failed, the cached snapshot is labeled stale and cannot be delivered

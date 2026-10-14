@@ -202,13 +202,14 @@ public sealed class ScanWorker(McpStateDirectory location, ILogger<ScanWorker> l
             {
                 if (state.AdmittedRoot(job.Workspace) != job.Root)
                     throw new InvalidDataException("Registered workspace root changed or disappeared.");
+                var inputFingerprint = NudgeState.WorkspaceFingerprint(job.Root);
                 var source = new ReleaseMetadata(state, client,
                     fixtureDirectory: Environment.GetEnvironmentVariable("NUDGE_RELEASES_DIR"));
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
                 deadline.CancelAfter(TimeSpan.FromSeconds(90));
                 var report = await new NudgeScanner(source).ScanAsync(job.Root, deadline.Token,
                     probeInstalled: true, state: state);
-                state.FinishScan(job, owner, report, null);
+                state.FinishScan(job, owner, report, null, inputFingerprint);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

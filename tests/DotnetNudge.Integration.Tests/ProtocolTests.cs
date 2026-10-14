@@ -209,6 +209,34 @@ public sealed class ProtocolTests
     }
 
     [Fact]
+    public void CompletedExplicitScanSeedsFingerprintWithoutDuplicateWorkerJob()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "nudge-deduplicate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var scope = Path.Combine(root, "workspace");
+            Directory.CreateDirectory(scope);
+            var project = Path.Combine(scope, "App.csproj");
+            File.WriteAllText(project, """<Project Sdk="Microsoft.NET.Sdk"/>""");
+            using var state = new NudgeState(Path.Combine(root, "state"));
+            state.Register(scope, TimeSpan.FromMinutes(15), "host");
+            state.QueueScan(WorkspaceDiscovery.ScopeId(scope));
+            var job = state.LeaseScan("cli")!;
+            var fingerprint = NudgeState.WorkspaceFingerprint(scope);
+            state.FinishScan(job, "cli", new ScanReport(Contract.Version,
+                WorkspaceDiscovery.Discover(scope), [], [], DateTimeOffset.UtcNow), null, fingerprint);
+            state.QueueScan(WorkspaceDiscovery.ScopeId(scope));
+            state.Reconcile();
+            Assert.Null(state.LeaseScan("worker"));
+            File.WriteAllText(project, """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>""");
+            state.Reconcile();
+            Assert.NotNull(state.LeaseScan("worker"));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
     public void ExistingV2StateMigratesWithoutDroppingPendingJobs()
     {
         var root = Path.Combine(Path.GetTempPath(), "nudge-migrate-" + Guid.NewGuid().ToString("N"));

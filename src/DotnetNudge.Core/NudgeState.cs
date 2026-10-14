@@ -534,7 +534,10 @@ public sealed class NudgeState : IDisposable
         using var command = connection.CreateCommand();
         command.CommandText = """
             INSERT INTO workspace_scan_jobs(workspace,requested,status)
-            VALUES($s,$now,'pending')
+            SELECT $s,$now,'pending' WHERE NOT EXISTS (
+              SELECT 1 FROM workspace_snapshots snapshot
+              JOIN workspace_registration registration ON registration.workspace=snapshot.workspace
+              WHERE snapshot.workspace=$s AND registration.fingerprint IS NOT NULL)
             ON CONFLICT(workspace) DO NOTHING
             """;
         command.Parameters.AddWithValue("$s", workspace);
@@ -571,7 +574,7 @@ public sealed class NudgeState : IDisposable
         foreach (var (workspace, root, previous) in registered)
         {
             if (!Directory.Exists(root) || WorkspaceDiscovery.ScopeId(root) != workspace) continue;
-            var current = Fingerprint(root);
+            var current = WorkspaceFingerprint(root);
             if (current == previous) continue;
             using var transaction = connection.BeginTransaction();
             command.Transaction = transaction;
@@ -601,7 +604,7 @@ public sealed class NudgeState : IDisposable
         }
     }
 
-    static string Fingerprint(string root)
+    public static string WorkspaceFingerprint(string root)
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var count = 0;
@@ -668,7 +671,8 @@ public sealed class NudgeState : IDisposable
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            SELECT j.workspace,r.root,j.requested,j.attempts FROM workspace_scan_jobs j
+            SELECT j.workspace,r.root,j.requested,j.attempts,r.fingerprint
+            FROM workspace_scan_jobs j
             JOIN workspace_registration r ON r.workspace=j.workspace
             WHERE EXISTS(SELECT 1 FROM workspace_sessions s
               WHERE s.workspace=r.workspace AND s.active_until>$now)
@@ -681,7 +685,8 @@ public sealed class NudgeState : IDisposable
         command.Parameters.AddWithValue("$scope", (object?)workspace ?? DBNull.Value);
         using var reader = command.ExecuteReader();
         ScanJob? job = reader.Read()
-            ? new(reader.GetString(0), reader.GetString(1), reader.GetInt64(2), reader.GetInt32(3) + 1)
+            ? new(reader.GetString(0), reader.GetString(1), reader.GetInt64(2), reader.GetInt32(3) + 1,
+                reader.IsDBNull(4) ? null : reader.GetString(4))
             : null;
         reader.Close();
         if (job is null) return null;
@@ -697,7 +702,8 @@ public sealed class NudgeState : IDisposable
         return job;
     }
 
-    public void FinishScan(ScanJob job, string owner, ScanReport? report, string? error)
+    public void FinishScan(ScanJob job, string owner, ScanReport? report, string? error,
+        string? inputFingerprint = null)
     {
         using var transaction = connection.BeginTransaction();
         using var command = connection.CreateCommand();
@@ -726,6 +732,18 @@ public sealed class NudgeState : IDisposable
             command.Parameters.AddWithValue("$body", SerializeReport(report));
             command.Parameters.AddWithValue("$scanned", report.ScannedAt.ToUnixTimeSeconds());
             command.ExecuteNonQuery();
+            if (inputFingerprint is not null)
+            {
+                command.CommandText = """
+                    UPDATE workspace_registration SET fingerprint=$fingerprint
+                    WHERE workspace=$s AND
+                    (fingerprint=$previous OR (fingerprint IS NULL AND $previous IS NULL))
+                    """;
+                command.Parameters.AddWithValue("$fingerprint", inputFingerprint);
+                command.Parameters.AddWithValue("$previous",
+                    (object?)job.PreviousFingerprint ?? DBNull.Value);
+                command.ExecuteNonQuery();
+            }
         }
         command.CommandText = report is not null
             ? "DELETE FROM workspace_scan_jobs WHERE workspace=$s AND owner=$owner AND requested<=$requested"
@@ -763,7 +781,8 @@ public sealed class NudgeState : IDisposable
             DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(3))) : null;
     }
 
-    public sealed record ScanJob(string Workspace, string Root, long Requested, int Attempts);
+    public sealed record ScanJob(string Workspace, string Root, long Requested, int Attempts,
+        string? PreviousFingerprint);
 
     static string SerializeReport(ScanReport report)
     {

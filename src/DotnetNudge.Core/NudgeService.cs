@@ -31,11 +31,12 @@ public sealed class NudgeService(NudgeState state, string? owner = null, bool cl
             fixtureDirectory: Environment.GetEnvironmentVariable("NUDGE_RELEASES_DIR"));
         try
         {
+            var inputFingerprint = NudgeState.WorkspaceFingerprint(root);
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(90));
             var result = await new NudgeScanner(source).ScanAsync(root, deadline.Token,
                 probeInstalled: true, state: state);
-            state.FinishScan(job, sessionOwner, result, null);
+            state.FinishScan(job, sessionOwner, result, null, inputFingerprint);
             return result;
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or UnauthorizedAccessException
