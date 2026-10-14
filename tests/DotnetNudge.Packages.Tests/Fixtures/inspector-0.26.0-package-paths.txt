@@ -1,0 +1,2 @@
+skills/fixture-migration/SKILL.md
+skills/fixture-second/SKILL.md
