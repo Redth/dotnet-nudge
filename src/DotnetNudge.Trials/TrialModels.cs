@@ -14,6 +14,8 @@ public sealed record PackageEdit(string ProjectPath, string PackageId, string Fr
 public sealed record SdkSelection(string Version, string Rid, string? PreparedRoot = null, bool AllowDownload = false);
 public sealed record TrialBudget(long MaxDiskBytes, TimeSpan MaxDuration, TimeSpan MaxProcessDuration);
 public sealed record TrialArtifactPaths(string LogsDirectory, string DiffFile);
+public sealed record OriginalFingerprint(string Head, string Branch, string IndexSha256,
+    string TrackedAndUntrackedSha256, string PorcelainStatus);
 public sealed record TrialPlan(
     string Id, int Revision, string Repository, string SourceCommit, string TrialRoot,
     string[] ProjectScopes, SdkSelection BaselineSdk, SdkSelection CandidateSdk,
@@ -23,7 +25,8 @@ public sealed record TrialPlan(
 public sealed record CommandEvidence(
     string Stage, string Executable, string[] Arguments, string WorkingDirectory,
     Dictionary<string, string> Environment, int? ExitCode, bool TimedOut,
-    string StdoutPath, string StderrPath, long DurationMilliseconds, int? TestCount = null);
+    string StdoutPath, string StderrPath, long DurationMilliseconds, int? TestCount = null,
+    string[]? BuildArtifacts = null, string? ArtifactSha256 = null, bool ArtifactVerified = false);
 
 [JsonConverter(typeof(JsonStringEnumConverter<TrialDimension>))]
 public enum TrialDimension { NotExercised, Passed, Failed }
@@ -40,7 +43,9 @@ public sealed record TrialReport(
     SdkPreparation? BaselineSdkProvenance = null, SdkPreparation? CandidateSdkProvenance = null,
     string? OriginalGitStatusBefore = null, string? OriginalGitStatusAfter = null,
     string[]? BaselineWarnings = null, string[]? CandidateWarnings = null,
-    string[]? AddedWarnings = null);
+    string[]? AddedWarnings = null, string? CandidateBranch = null,
+    string? CandidateWorktree = null, OriginalFingerprint? OriginalBefore = null,
+    OriginalFingerprint? OriginalAfter = null);
 
 public sealed class TrialRecord
 {

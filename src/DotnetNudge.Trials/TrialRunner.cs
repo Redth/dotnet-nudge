@@ -15,13 +15,13 @@ public sealed class TrialRunner(TrialStore store, TrialGit? git = null, TrialSdk
 
     public TrialRecord Propose(TrialPlan plan)
     {
-        Validate(plan);
         if (Path.GetFullPath(plan.TrialRoot) != store.Root)
             throw new TrialException("Plan trial root differs from store root");
-        using var lease = store.Lease(plan.Id);
-        if (File.Exists(TrialPaths.Child(store.Root, Path.Combine(plan.Id, "state.json"))))
-            throw new TrialException("Trial ID already exists");
-        var record = new TrialRecord { Plan = plan };
+        if (TrialPaths.Overlaps(plan.Repository, store.Root))
+            throw new TrialException("Trial root and repository must be separate non-overlapping trees");
+        Validate(plan);
+        var token = store.Claim(plan.Id);
+        var record = new TrialRecord { Plan = plan, OwnerToken = token };
         store.Save(record);
         return record;
     }
@@ -76,7 +76,6 @@ public sealed class TrialRunner(TrialStore store, TrialGit? git = null, TrialSdk
             throw new TrialException("Execution requires the exact approved revision and an unused approval");
         var plan = record.Plan;
         var root = TrialPaths.Child(store.Root, id);
-        record.OwnerToken = Guid.NewGuid().ToString("N");
         Move(record, TrialPhase.Preparing);
         var commands = new List<CommandEvidence>();
         string? source = null;
@@ -89,24 +88,26 @@ public sealed class TrialRunner(TrialStore store, TrialGit? git = null, TrialSdk
             _sdk.ValidateSelection(plan.BaselineSdk, plan.AllowNetwork);
             _sdk.ValidateSelection(plan.CandidateSdk, plan.AllowNetwork);
             var dirty = await _git.PreflightAsync(plan, duration.Token, plan.Budget.MaxProcessDuration);
-            var originalStatus = await _git.StatusAsync(plan.Repository, duration.Token, plan.Budget.MaxProcessDuration);
-            (branch, source) = await _git.CreateAsync(plan, duration.Token, plan.Budget.MaxProcessDuration);
+            var original = await _git.FingerprintAsync(plan.Repository, duration.Token, plan.Budget.MaxProcessDuration);
+            (branch, source) = await _git.CreateAsync(plan, token: duration.Token,
+                processLimit: plan.Budget.MaxProcessDuration);
             record.Checkpoints.Add($"Created owned worktree {branch} at {source}; original dirty excluded: {dirty}");
             var report = new TrialReport(plan.SourceCommit, dirty, branch, source,
                 plan.BaselineSdk.Version, plan.CandidateSdk.Version,
                 TrialPaths.Child(root, plan.Artifacts.DiffFile),
                 "Worktrees and private roots do not sandbox MSBuild/test code; OS-level sandboxing is required for untrusted projects. Workloads, external platform tools, package graph/advisory comparison, runtime smoke, and platform matrix are not validated." +
                 (plan.Commands.Any(c => c.Verb == "test") ? "" : " Compile-only: automated tests not exercised."),
-                commands, OriginalGitStatusBefore: originalStatus);
+                commands, OriginalGitStatusBefore: original.PorcelainStatus, OriginalBefore: original);
             record.Report = report;
             store.Save(record);
+            EnforceDisk(root, plan.Budget.MaxDiskBytes);
             var baseline = await _sdk.PrepareAsync(plan.BaselineSdk, TrialPaths.Child(root, "sdk-baseline"),
-                plan.AllowNetwork, duration.Token, plan.Budget.MaxDiskBytes);
+                plan.AllowNetwork, duration.Token, RemainingDisk(root, plan.Budget.MaxDiskBytes));
             report = report with { BaselineSdkProvenance = baseline };
             record.Report = report;
             store.Save(record);
             var candidate = await _sdk.PrepareAsync(plan.CandidateSdk, TrialPaths.Child(root, "sdk-candidate"),
-                plan.AllowNetwork, duration.Token, plan.Budget.MaxDiskBytes);
+                plan.AllowNetwork, duration.Token, RemainingDisk(root, plan.Budget.MaxDiskBytes));
             report = report with { CandidateSdkProvenance = candidate };
             record.Report = report;
             store.Save(record);
@@ -116,14 +117,21 @@ public sealed class TrialRunner(TrialStore store, TrialGit? git = null, TrialSdk
             if ((await _git.DiffAsync(source, duration.Token, plan.Budget.MaxProcessDuration)).Length != 0)
                 throw new TrialException("Baseline mutated tracked source; upgrade comparison is invalid");
             Move(record, TrialPhase.Upgrading);
-            foreach (var edit in plan.PackageEdits) TrialEdits.ApplyPackageEdit(source, edit);
-            TrialEdits.UpdateSdkPin(source, plan.CandidateSdk.Version);
+            var (candidateBranch, candidateSource) = await _git.CreateAsync(plan, candidate: true,
+                token: duration.Token, processLimit: plan.Budget.MaxProcessDuration);
+            report = record.Report! with { CandidateBranch = candidateBranch, CandidateWorktree = candidateSource };
+            record.Report = report;
+            record.Checkpoints.Add($"Created separate candidate worktree {candidateBranch} at {candidateSource}");
+            store.Save(record);
+            EnforceDisk(root, plan.Budget.MaxDiskBytes);
+            foreach (var edit in plan.PackageEdits) TrialEdits.ApplyPackageEdit(candidateSource, edit);
+            TrialEdits.UpdateSdkPin(candidateSource, plan.CandidateSdk.Version);
             Directory.CreateDirectory(Path.GetDirectoryName(report.DiffPath)!);
-            File.WriteAllText(report.DiffPath, await _git.DiffAsync(source, duration.Token, plan.Budget.MaxProcessDuration));
+            File.WriteAllText(report.DiffPath, await _git.DiffAsync(candidateSource, duration.Token, plan.Budget.MaxProcessDuration));
             record.Checkpoints.Add("Applied approved edits; diff persisted");
             store.Save(record);
             Move(record, TrialPhase.Validating);
-            await RunStage("candidate", candidate.Executable, plan.CandidateSdk, source, root, plan, record, commands, duration.Token);
+            await RunStage("candidate", candidate.Executable, plan.CandidateSdk, candidateSource, root, plan, record, commands, duration.Token);
             EnforceDisk(root, plan.Budget.MaxDiskBytes);
             Move(record, TrialPhase.ReadyForReview);
         }
@@ -149,11 +157,11 @@ public sealed class TrialRunner(TrialStore store, TrialGit? git = null, TrialSdk
             {
                 try
                 {
-                    var after = await _git.StatusAsync(plan.Repository);
-                    record.Report = current with { OriginalGitStatusAfter = after };
-                    if (record.Phase == TrialPhase.ReadyForReview && current.OriginalGitStatusBefore != after)
+                    var after = await _git.FingerprintAsync(plan.Repository);
+                    record.Report = current with { OriginalGitStatusAfter = after.PorcelainStatus, OriginalAfter = after };
+                    if (record.Phase == TrialPhase.ReadyForReview && current.OriginalBefore != after)
                     {
-                        record.BlockReason = "Original Git status changed during the trial; source isolation cannot be attested";
+                        record.BlockReason = "Original Git HEAD/branch/index or file contents changed during the trial; source isolation cannot be attested";
                         Move(record, TrialPhase.Blocked);
                     }
                     else store.Save(record);
@@ -191,20 +199,50 @@ public sealed class TrialRunner(TrialStore store, TrialGit? git = null, TrialSdk
         if (record.Phase == TrialPhase.Archived) return record;
         if (record.Phase is TrialPhase.Preparing or TrialPhase.Baseline or TrialPhase.Upgrading or TrialPhase.Validating)
             throw new TrialException("Active trial cannot be cleaned up");
+        if (record.Report is null &&
+            (Directory.Exists(TrialPaths.Child(store.Root, Path.Combine(id, "source"))) ||
+             Directory.Exists(TrialPaths.Child(store.Root, Path.Combine(id, "candidate-source")))))
+            throw new TrialException("Unrecorded trial worktree requires manual ownership review");
         if (record.Report is { } report)
         {
             var expectedSource = TrialPaths.Child(store.Root, Path.Combine(id, "source"));
+            var expectedCandidate = TrialPaths.Child(store.Root, Path.Combine(id, "candidate-source"));
             if (record.OwnerToken is null || record.ApprovedPlanDigest != Digest(record.Plan) ||
-                Path.GetFullPath(record.Plan.TrialRoot) != store.Root || report.Worktree != expectedSource ||
+                Path.GetFullPath(record.Plan.TrialRoot) != store.Root ||
+                TrialPaths.Overlaps(record.Plan.Repository, store.Root) || report.Worktree != expectedSource ||
                 report.Branch != $"nudge-trial-{id}" || report.SourceCommit != record.Plan.SourceCommit)
                 throw new TrialException("Worktree ownership metadata does not match trial");
-            if (await _git.StatusAsync(report.Worktree) is { Length: > 0 })
-                throw new TrialException("Dirty trial worktree retained for review");
-            await _git.RemoveAsync(record.Plan.Repository, report.Worktree, report.Branch, report.SourceCommit);
+            if ((report.CandidateWorktree is null) != (report.CandidateBranch is null) ||
+                (report.CandidateWorktree is not null &&
+                    (report.CandidateWorktree != expectedCandidate ||
+                     report.CandidateBranch != $"nudge-trial-{id}-candidate")))
+                throw new TrialException("Candidate worktree ownership metadata mismatch");
+            var owned = report.CandidateWorktree is null
+                ? new[] { (report.Worktree, report.Branch) }
+                : new[] { (report.CandidateWorktree, report.CandidateBranch!), (report.Worktree, report.Branch) };
+            foreach (var (path, ownedBranch) in owned)
+                await _git.EnsureCleanOwnedAsync(record.Plan.Repository, path, ownedBranch, report.SourceCommit);
+            foreach (var (path, ownedBranch) in owned)
+            {
+                store.VerifyOwnership(id, record.OwnerToken);
+                await _git.RemoveWorktreeAsync(record.Plan.Repository, path);
+                record.Checkpoints.Add($"Removed owned worktree {path}");
+                store.Save(record);
+                await _git.DeleteOwnedBranchAsync(record.Plan.Repository, ownedBranch, report.SourceCommit);
+                record.Checkpoints.Add($"Deleted owned branch {ownedBranch} at {report.SourceCommit}");
+                store.Save(record);
+            }
             foreach (var sdkRoot in new[] { "sdk-baseline", "sdk-candidate", "home", "nuget", "temp" })
             {
+                store.VerifyOwnership(id, record.OwnerToken);
                 var path = TrialPaths.Child(store.Root, Path.Combine(id, sdkRoot));
-                if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+                if (Directory.Exists(path))
+                {
+                    TrialPaths.AssertNoLinks(path);
+                    Directory.Delete(path, recursive: true);
+                    record.Checkpoints.Add($"Removed trial-owned root {sdkRoot}");
+                    store.Save(record);
+                }
             }
         }
         Move(record, TrialPhase.Archived);
@@ -238,7 +276,8 @@ public sealed class TrialRunner(TrialStore store, TrialGit? git = null, TrialSdk
         };
         AssertResolverPaths(source, source);
         var logs = TrialPaths.Child(root, plan.Artifacts.LogsDirectory);
-        async Task<CommandEvidence> Run(string[] args, string cwd)
+        var built = new Dictionary<string, (string[] Paths, string Hash)>(StringComparer.Ordinal);
+        async Task<CommandEvidence> Run(string[] args, string cwd, bool allowNonzero = false)
         {
             var result = await _process.RunAsync(stage, executable, args, cwd, env, logs,
                 plan.Budget.MaxProcessDuration, token);
@@ -246,7 +285,8 @@ public sealed class TrialRunner(TrialStore store, TrialGit? git = null, TrialSdk
             store.Save(WithReport(record, evidence));
             if (result.TimedOut || token.IsCancellationRequested)
                 throw new OperationCanceledException("Owned process timed out or cancelled", token);
-            if (result.ExitCode != 0) throw new TrialException($"{stage}: dotnet {string.Join(' ', args)} exited {result.ExitCode}; see {result.StderrPath}");
+            if (!allowNonzero && result.ExitCode != 0)
+                throw new TrialException($"{stage}: dotnet {string.Join(' ', args)} exited {result.ExitCode}; see {result.StderrPath}");
             return result;
         }
         var version = await Run(["--version"], source);
@@ -263,14 +303,33 @@ public sealed class TrialRunner(TrialStore store, TrialGit? git = null, TrialSdk
                 if (File.ReadAllText(scoped.StdoutPath).Trim() != selection.Version)
                     throw new TrialException($"{stage}: nested project selected an unexpected SDK");
             }
-            var result = await Run([command.Verb, ..command.Arguments], cwd);
+            var result = await Run([command.Verb, ..command.Arguments], cwd, allowNonzero: command.Verb == "test");
+            var projectPath = TrialPaths.Child(cwd, command.Arguments[0]);
+            if (command.Verb == "build")
+            {
+                var artifacts = BuiltArtifacts(projectPath);
+                var hash = ArtifactHash(artifacts);
+                evidence[^1] = result with { BuildArtifacts = artifacts, ArtifactSha256 = hash, ArtifactVerified = true };
+                built[projectPath] = (artifacts, hash);
+                store.Save(WithReport(record, evidence));
+            }
             if (command.Verb == "test")
             {
-                var output = File.ReadAllText(result.StdoutPath);
+                if (!built.TryGetValue(projectPath, out var compilation))
+                    throw new TrialException($"{stage}: test target has no preceding verified build: {projectPath}");
+                var output = File.ReadAllText(result.StdoutPath) + "\n" + File.ReadAllText(result.StderrPath);
                 var counts = Regex.Matches(output, @"(?:Total tests:\s*|Total:\s*)(\d+)", RegexOptions.IgnoreCase);
                 var count = counts.Sum(m => int.Parse(m.Groups[1].Value));
-                evidence[^1] = result with { TestCount = count };
+                evidence[^1] = result with {
+                    TestCount = count, BuildArtifacts = compilation.Paths, ArtifactSha256 = compilation.Hash
+                };
                 store.Save(WithReport(record, evidence));
+                if (ArtifactHash(compilation.Paths) != compilation.Hash)
+                    throw new TrialException($"{stage}: test artifact changed since the verified build");
+                evidence[^1] = evidence[^1] with { ArtifactVerified = true };
+                store.Save(WithReport(record, evidence));
+                if (result.ExitCode != 0)
+                    throw new TrialException($"{stage}: dotnet test exited {result.ExitCode}; {count} tests discovered; see {result.StderrPath}");
                 if (count == 0) throw new TrialException($"{stage}: zero discovered tests is not a test pass");
             }
             EnforceDisk(root, plan.Budget.MaxDiskBytes);
@@ -299,13 +358,38 @@ public sealed class TrialRunner(TrialStore store, TrialGit? git = null, TrialSdk
                 new[] { c.StdoutPath, c.StderrPath }.Where(File.Exists).SelectMany(File.ReadLines))
             .Where(line => Regex.IsMatch(line, @"\bwarning\b", RegexOptions.IgnoreCase))
             .Distinct(StringComparer.Ordinal).ToArray();
+    private static string[] BuiltArtifacts(string projectPath)
+    {
+        var bin = Path.Combine(Path.GetDirectoryName(projectPath)!, "bin");
+        var name = Path.GetFileNameWithoutExtension(projectPath) + ".dll";
+        if (!Directory.Exists(bin))
+            throw new TrialException($"Build produced no project-local bin directory: {projectPath}");
+        var files = Directory.GetFiles(bin, name, SearchOption.AllDirectories).Order(StringComparer.Ordinal).ToArray();
+        if (files.Length == 0)
+            throw new TrialException($"Build produced no project-local assembly: {projectPath}");
+        foreach (var file in files)
+            if (new FileInfo(file).LinkTarget is not null)
+                throw new TrialException($"Build artifact is a symlink: {file}");
+        return files;
+    }
+    private static string ArtifactHash(string[] files)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        foreach (var file in files)
+        {
+            hash.AppendData(Encoding.UTF8.GetBytes(file + "\0"));
+            hash.AppendData(SHA256.HashData(File.ReadAllBytes(file)));
+        }
+        return Convert.ToHexString(hash.GetHashAndReset());
+    }
     private static StageSummary Summarize(string stage, List<CommandEvidence> evidence)
     {
         TrialDimension Dimension(string verb)
         {
             var commands = evidence.Where(c => c.Stage == stage && c.Arguments.FirstOrDefault() == verb).ToArray();
             if (commands.Length == 0) return TrialDimension.NotExercised;
-            return commands.All(c => c.ExitCode == 0 && !c.TimedOut)
+            return commands.All(c => c.ExitCode == 0 && !c.TimedOut &&
+                (verb is not ("build" or "test") || c.ArtifactVerified))
                 ? TrialDimension.Passed : TrialDimension.Failed;
         }
         var tests = evidence.Where(c => c.Stage == stage && c.Arguments.FirstOrDefault() == "test").ToArray();
@@ -339,8 +423,14 @@ public sealed class TrialRunner(TrialStore store, TrialGit? git = null, TrialSdk
     }
     private static void EnforceDisk(string root, long limit)
     {
-        var bytes = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Sum(f => new FileInfo(f).Length);
-        if (bytes > limit) throw new TrialException($"Trial disk budget exceeded: {bytes} > {limit}");
+        RemainingDisk(root, limit);
+    }
+    private static long RemainingDisk(string root, long limit)
+    {
+        var bytes = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+            .Sum(f => new FileInfo(f).Length);
+        if (bytes >= limit) throw new TrialException($"Trial disk budget exceeded: {bytes} >= {limit}");
+        return limit - bytes;
     }
     private void Move(TrialRecord record, TrialPhase phase)
     {
@@ -368,9 +458,8 @@ public sealed class TrialRunner(TrialStore store, TrialGit? git = null, TrialSdk
             throw new TrialException("Logs and diff must be disjoint paths inside trial-owned artifacts/");
         if (!plan.Commands.Any(c => c.Verb == "restore") || !plan.Commands.Any(c => c.Verb == "build"))
             throw new TrialException("Trial requires explicit restore and build commands");
-        if (Path.GetFullPath(plan.TrialRoot).StartsWith(Path.GetFullPath(plan.Repository) + Path.DirectorySeparatorChar,
-                StringComparison.Ordinal))
-            throw new TrialException("Trial root must be outside the original repository");
+        if (TrialPaths.Overlaps(plan.Repository, plan.TrialRoot))
+            throw new TrialException("Trial root and repository must be separate non-overlapping trees");
         foreach (var scope in plan.ProjectScopes) TrialPaths.Child(plan.Repository, scope);
         foreach (var edit in plan.PackageEdits)
         {
@@ -396,6 +485,14 @@ public sealed class TrialRunner(TrialStore store, TrialGit? git = null, TrialSdk
                     a.StartsWith("--source", StringComparison.OrdinalIgnoreCase) ||
                     a.StartsWith("-bl", StringComparison.OrdinalIgnoreCase)))
                 throw new TrialException("Only restore/build/test with trial-local outputs are supported");
+            if (command.Arguments[0].EndsWith(".sln", StringComparison.OrdinalIgnoreCase) ||
+                command.Arguments[0].EndsWith(".slnx", StringComparison.OrdinalIgnoreCase))
+                throw new TrialException("Solution-level external references are unsupported; select explicit projects");
+            if (command.Verb == "test" &&
+                (!command.Arguments.Contains("--no-build", StringComparer.Ordinal) ||
+                 !plan.Commands.TakeWhile(c => !ReferenceEquals(c, command))
+                     .Any(c => c.Verb == "build" && c.Arguments[0] == command.Arguments[0])))
+                throw new TrialException("Tests require a preceding build of the same project and --no-build");
             var target = TrialPaths.Child(plan.Repository, command.Arguments[0]);
             if (!plan.ProjectScopes.Any(scope => target == TrialPaths.Child(plan.Repository, scope) ||
                 target.StartsWith(TrialPaths.Child(plan.Repository, scope) + Path.DirectorySeparatorChar, StringComparison.Ordinal)))

@@ -22,7 +22,7 @@ public sealed class TrialSdk(HttpClient? client = null)
         if (sdk.PreparedRoot is { } prepared)
         {
             if (!Directory.Exists(prepared)) throw new TrialException($"Prepared SDK root missing: {prepared}");
-            TrialPaths.AssertNoLinks(prepared);
+            TrialSdkLinks.InspectPreparedRoot(Path.GetFullPath(prepared));
         }
         else if (!sdk.AllowDownload || !networkAllowed)
             throw new TrialException("SDK acquisition requires explicit plan network permission");
@@ -40,7 +40,6 @@ public sealed class TrialSdk(HttpClient? client = null)
             if (!Directory.Exists(root) || Path.GetFullPath(destination).StartsWith(root + Path.DirectorySeparatorChar,
                     StringComparison.Ordinal))
                 throw new TrialException("Prepared SDK root is missing or overlaps its destination");
-            TrialPaths.AssertNoLinks(root);
             Directory.CreateDirectory(destination);
             try { await CopyTreeAsync(root, destination, cancellationToken, maxBytes); }
             catch { Directory.Delete(destination, recursive: true); throw; }
@@ -99,7 +98,7 @@ public sealed class TrialSdk(HttpClient? client = null)
             if (!actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
                 throw new TrialException("SDK archive SHA-512 mismatch");
             await using (var archive = File.OpenRead(archivePath))
-                ExtractVerifiedTar(archive, destination, maxBytes, cancellationToken);
+                ExtractVerifiedTar(archive, destination, maxBytes - archive.Length, cancellationToken);
             File.Delete(archivePath);
         }
         catch { Directory.Delete(destination, recursive: true); throw; }
@@ -116,12 +115,20 @@ public sealed class TrialSdk(HttpClient? client = null)
         using var tar = new TarReader(gzip);
         TarEntry? entry;
         long extracted = 0;
+        var links = new Dictionary<string, string>(StringComparer.Ordinal);
         while ((entry = tar.GetNextEntry()) is not null)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (entry.Name is "." or "./") continue;
             var path = TrialPaths.Child(destination, entry.Name.TrimEnd('/'));
             if (entry.EntryType == TarEntryType.Directory) Directory.CreateDirectory(path);
+            else if (entry.EntryType == TarEntryType.SymbolicLink)
+            {
+                if (File.Exists(path) || Directory.Exists(path) ||
+                    string.IsNullOrWhiteSpace(entry.LinkName) ||
+                    !links.TryAdd(path, entry.LinkName))
+                    throw new TrialException($"Invalid or duplicate SDK archive link: {entry.Name}");
+            }
             else if (entry.EntryType == TarEntryType.RegularFile || entry.EntryType == TarEntryType.V7RegularFile)
             {
                 if (entry.Length > maxBytes - extracted)
@@ -146,6 +153,18 @@ public sealed class TrialSdk(HttpClient? client = null)
             }
             else throw new TrialException($"Unsupported SDK archive entry: {entry.Name} ({entry.EntryType})");
         }
+        foreach (var (path, _) in links)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var target = TrialSdkLinks.ResolveFile(destination, path, links);
+            var length = new FileInfo(target).Length;
+            if (length > maxBytes - extracted)
+                throw new TrialException("Materialized SDK links exceed disk budget");
+            extracted += length;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.Copy(target, path);
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, File.GetUnixFileMode(target));
+        }
     }
 
     private static string Dotnet(string root)
@@ -157,24 +176,27 @@ public sealed class TrialSdk(HttpClient? client = null)
 
     private static async Task CopyTreeAsync(string source, string target, CancellationToken token, long maxBytes)
     {
-        foreach (var directory in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
+        var entries = TrialSdkLinks.InspectPreparedRoot(source);
+        var links = entries.Links.ToDictionary(link => link.Link, link => link.Target, StringComparer.Ordinal);
+        foreach (var directory in entries.Directories)
         {
             token.ThrowIfCancellationRequested();
             Directory.CreateDirectory(TrialPaths.Child(target, Path.GetRelativePath(source, directory)));
         }
         long copied = 0;
-        foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+        foreach (var file in entries.Files.Concat(entries.Links.Select(link => link.Link)))
         {
             token.ThrowIfCancellationRequested();
-            var length = new FileInfo(file).Length;
+            var resolved = links.GetValueOrDefault(file) ?? file;
+            var length = new FileInfo(resolved).Length;
             if (length > maxBytes - copied) throw new TrialException("Prepared SDK exceeds disk budget");
             copied += length;
-            await using var input = File.OpenRead(file);
+            await using var input = File.OpenRead(resolved);
             await using var output = new FileStream(TrialPaths.Child(target, Path.GetRelativePath(source, file)),
                 FileMode.CreateNew, FileAccess.Write);
             await input.CopyToAsync(output, token);
             if (!OperatingSystem.IsWindows())
-                File.SetUnixFileMode(output.Name, File.GetUnixFileMode(file));
+                File.SetUnixFileMode(output.Name, File.GetUnixFileMode(resolved));
         }
     }
 }

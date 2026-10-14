@@ -2,6 +2,17 @@ namespace DotnetNudge.Trials;
 
 internal static class TrialPaths
 {
+    public static bool Overlaps(string first, string second)
+    {
+        var comparison = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var a = Path.TrimEndingDirectorySeparator(Path.GetFullPath(first));
+        var b = Path.TrimEndingDirectorySeparator(Path.GetFullPath(second));
+        return a.Equals(b, comparison) ||
+            a.StartsWith(b + Path.DirectorySeparatorChar, comparison) ||
+            b.StartsWith(a + Path.DirectorySeparatorChar, comparison);
+    }
+
     public static string Child(string root, string relative)
     {
         if (string.IsNullOrWhiteSpace(relative) || Path.IsPathRooted(relative))
