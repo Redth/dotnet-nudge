@@ -33,13 +33,16 @@ public sealed class ProtocolTests
                 """{"releases-index":[{"channel-version":"10.0","releases.json":"https://example.invalid/10.0/releases.json"}]}""");
             File.WriteAllText(Path.Combine(releases, "10.0", "releases.json"),
                 """{"releases":[{"sdk":{"version":"10.0.113"}}]}""");
+            var engine = Environment.GetEnvironmentVariable("NUDGE_INTEGRATION_ENGINE_PATH");
             var assembly = typeof(DotnetNudge.McpEndpoint).Assembly.Location;
             var stderr = new List<string>();
             var transport = new StdioClientTransport(new StdioClientTransportOptions
             {
                 Name = "nudge-fixture",
-                Command = "dotnet",
-                Arguments = [assembly, "mcp", "--state-dir", stateDir],
+                Command = engine ?? "dotnet",
+                Arguments = engine is null
+                    ? [assembly, "mcp", "--state-dir", stateDir]
+                    : ["mcp", "--state-dir", stateDir],
                 WorkingDirectory = root,
                 EnvironmentVariables = new Dictionary<string, string?> { ["NUDGE_RELEASES_DIR"] = releases },
                 StandardErrorLines = line => { lock (stderr) stderr.Add(line); }

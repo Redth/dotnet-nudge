@@ -14,6 +14,8 @@ public sealed class NudgeState : IDisposable
     public static string DefaultDirectory =>
         Environment.GetEnvironmentVariable("NUDGE_STATE_DIR") is { Length: > 0 } path
             ? WorkspaceDiscovery.Canonical(path)
+            : Environment.GetEnvironmentVariable("NUDGE_PLUGIN_DATA") is { Length: > 0 } pluginData
+                ? WorkspaceDiscovery.Canonical(pluginData)
             : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "dotnet-nudge");
 
     public NudgeState(string directory, TimeProvider? clock = null)

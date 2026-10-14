@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "dotnet-nudge": {
+      "type": "stdio",
+      "command": "dotnet-nudge",
+      "args": ["mcp"],
+      "env": {
+        "NUDGE_PLUGIN_DATA": "${PLUGIN_DATA}"
+      }
+    }
+  }
+}

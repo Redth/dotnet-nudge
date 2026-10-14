@@ -136,8 +136,17 @@ class PluginManifestTests(unittest.TestCase):
         )
         self.assertNotIn("hooks", claude)
         self.assertNotIn("mcpServers", claude)
-        self.assertFalse((plugin_dir / "mcp.json").exists())
-        self.assertFalse((plugin_dir / ".mcp.json").exists())
+        portable_mcp = read_json(plugin_dir / "mcp.json")
+        native_mcp = read_json(plugin_dir / ".mcp.json")
+        self.assertEqual(portable_mcp["$schema"], "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json")
+        for config, placeholder in ((portable_mcp, "${PLUGIN_DATA}"),
+                                    (native_mcp, "${CLAUDE_PLUGIN_DATA}")):
+            self.assertEqual(set(config["mcpServers"]), {"dotnet-nudge"})
+            server = config["mcpServers"]["dotnet-nudge"]
+            self.assertEqual(server["type"], "stdio")
+            self.assertEqual(server["command"], "dotnet-nudge")
+            self.assertEqual(server["args"], ["mcp"])
+            self.assertEqual(server["env"], {"NUDGE_PLUGIN_DATA": placeholder})
 
         runtime = read_json(plugin_dir / "runtime-manifest.json")
         self.assertEqual(runtime["status"], "unpublished")

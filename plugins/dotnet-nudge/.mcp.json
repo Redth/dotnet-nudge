@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "dotnet-nudge": {
+      "type": "stdio",
+      "command": "dotnet-nudge",
+      "args": ["mcp"],
+      "env": {
+        "NUDGE_PLUGIN_DATA": "${CLAUDE_PLUGIN_DATA}"
+      }
+    }
+  }
+}

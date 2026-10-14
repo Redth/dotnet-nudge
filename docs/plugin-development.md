@@ -16,10 +16,10 @@ The marketplace is `.claude-plugin/marketplace.json` and its plugin source is
 | Claude Code | `.claude-plugin/plugin.json` | `hooks/hooks.json` |
 
 Both hosts load the same four immediate child skill directories under `skills/`.
-Hooks are configured once per host; there is no portable hook schema and no
-MCP configuration in this package. Do not add both a native and portable hook
-entry for the same event. Do not add an enabled MCP server until the engine
-implements that server.
+Hooks are configured once per host; there is no portable hook schema. Copilot
+uses the Agent Plugins 1.0 `mcp.json`, and Claude Code uses native `.mcp.json`.
+They declare the same server name, not two simultaneous server instances.
+Do not add both a native and portable hook entry for the same event.
 
 The marketplace uses the common name `dotnet-nudge-marketplace`, and the plugin
 is named `dotnet-nudge` in every manifest. The relative marketplace `source`
@@ -72,7 +72,31 @@ status and an empty artifact list; do not invent a release URL, version pin, or
 checksum.
 
 For local development, build or obtain an engine executable separately and
-set `NUDGE_ENGINE_PATH` before launching the host. When a trusted archive is
+set `NUDGE_ENGINE_PATH` before launching the host. MCP launches the
+`dotnet-nudge` executable through `PATH` on Linux, macOS and Windows; add the
+directory containing the same executable to `PATH` before launching the host.
+`NUDGE_ENGINE_PATH` alone configures hooks, **not** MCP. An executable named
+`dotnet-nudge`/`dotnet-nudge.exe` must already exist; the plugin does not
+build, download, or install it automatically. For example, after a local
+self-contained publish:
+
+```sh
+dotnet publish src/DotnetNudge/DotnetNudge.csproj -c Release -r osx-arm64 --self-contained true -o /your/engine/directory
+export NUDGE_ENGINE_PATH=/your/engine/directory/dotnet-nudge
+export PATH="/your/engine/directory:$PATH"
+```
+
+Use your actual RID and path; on Windows PowerShell, set
+`$env:NUDGE_ENGINE_PATH` to the full `.exe` path and prepend its directory
+with `$env:PATH = "C:\path\to\engine;$env:PATH"`. Do not use an OS-incompatible
+shell launcher. The MCP plugin config supplies `NUDGE_PLUGIN_DATA` from its
+host's writable plugin data directory; the hook wrapper uses the matching
+host plugin-data path. To override both, set `NUDGE_STATE_DIR` in the host
+environment before starting it. Never put state in the read-only plugin
+cache. The MCP process reads the workspace only from client roots or an
+explicit `nudge_register(workspace)` call, never from its own cwd.
+
+When a trusted archive is
 provided locally, the setup helper accepts a ZIP or tar archive containing one
 RID-appropriate self-contained publish tree with `dotnet-nudge` (or
 `dotnet-nudge.exe` on Windows) at the archive root:
@@ -122,9 +146,10 @@ decision --workspace PATH --finding ID --revision REV --action snooze|skip-versi
 
 `scan` and `status` are read-only assessments. `decision` persists an explicit
 preference and must not run until the user approves its exact workspace,
-finding ID, revision, action, and optional expiry. The `trial` and MCP command
-surfaces are not implemented; do not document or invoke them as working
-commands. None of these commands are executed by the hook launchers.
+finding ID, revision, action, and optional expiry. `mcp [--state-dir PATH]`
+serves the local stdio endpoint; see [integration](integration.md). Actual
+trials are blocked until the reviewed trial library is wired. None of these
+commands are executed by the hook launchers.
 
 ## Offline validation
 

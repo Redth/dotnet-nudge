@@ -22,5 +22,5 @@ description: Explain the proposed isolated .NET upgrade-trial boundary without c
 
 ## Supported and not yet implemented
 
-- The foundation CLI currently provides `version`, read-only `scan`/`status`, `doctor`, and structured `decision`; the trial lifecycle and an MCP endpoint are not implemented.
+- CLI and MCP report current findings; `nudge_trial` explicitly reports blocked coverage until the reviewed trial runner is integrated.
 - Do not invoke a guessed `trial` command, simulate trial completion, or claim that schema validation proves isolated execution works.

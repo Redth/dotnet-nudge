@@ -31,5 +31,5 @@ description: Capture explicit dotnet-nudge reminder choices without claiming uns
 
 ## Supported and not yet implemented
 
-- Decision persistence is available through the foundation CLI, not an MCP endpoint. `enable-category` reverses a category disable when supported by current engine help.
+- Decision persistence is available through CLI `decision` or MCP `nudge_decide`/`nudge_preferences` when connected. `enable-category` reverses a category disable when supported by current engine help.
 - Do not claim that a snooze, skip, category setting, or cross-session preference was saved unless the decision command confirms success.

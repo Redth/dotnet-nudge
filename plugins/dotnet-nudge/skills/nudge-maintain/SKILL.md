@@ -28,4 +28,4 @@ description: Review .NET maintenance evidence and explain the explicitly local d
 - No dotnet-nudge engine release is published by this repository yet. For local development, launch the host with `NUDGE_ENGINE_PATH` set to an executable supplied by the developer.
 - If a trusted local release archive is supplied, use `scripts/setup-runtime.py` only with its exact published version, RID, and SHA-256. It accepts a local ZIP/tar archive; it does not download binaries or accept licenses.
 - The engine project is `src/DotnetNudge/DotnetNudge.csproj`; use its local build/run instructions in plugin development docs only after the foundation source is present.
-- No MCP endpoint or trial command is implemented. Do not start a trial or assume restore/build behavior.
+- A local stdio MCP endpoint is available after explicit engine installation and PATH setup. It does not install tooling. No trial execution is integrated yet.

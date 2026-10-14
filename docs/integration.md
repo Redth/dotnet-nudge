@@ -6,6 +6,14 @@ process; its stdout is exclusively MCP protocol traffic and diagnostics go to
 stderr. The same state directory is used by CLI, hooks, and MCP. Set
 `NUDGE_STATE_DIR` for all three or pass `--state-dir` to each launcher.
 
+The portable `plugins/dotnet-nudge/mcp.json` and Claude-native `.mcp.json`
+both require a previously installed executable named `dotnet-nudge` on the
+host's `PATH`. `NUDGE_PLUGIN_DATA` points at the host's persistent plugin data,
+matching the hook wrapper's fallback state location. `NUDGE_STATE_DIR`
+overrides both when set for the host. Plugin installation alone cannot start
+the MCP server before an engine has been supplied locally; see
+`docs/plugin-development.md`.
+
 The MCP tools accept an absolute `workspace` path. If the client advertises MCP
 roots, the requested canonical path must be within a root. Clients without
 roots can explicitly register an absolute workspace using `nudge_register`;

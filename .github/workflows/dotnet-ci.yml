@@ -35,3 +35,7 @@ jobs:
       - name: Smoke
         shell: bash
         run: ./publish/${{ matrix.executable }} version
+      - name: Verify published MCP protocol
+        env:
+          NUDGE_INTEGRATION_ENGINE_PATH: ${{ github.workspace }}/publish/${{ matrix.executable }}
+        run: dotnet test tests/DotnetNudge.Integration.Tests/DotnetNudge.Integration.Tests.csproj --configuration Release --no-build --filter FullyQualifiedName~ChildProcessInitializesListsToolsScansAndDecides

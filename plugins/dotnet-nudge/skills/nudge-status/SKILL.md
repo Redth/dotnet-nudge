@@ -8,7 +8,7 @@ description: Check dotnet-nudge availability and report only verified .NET maint
 ## Read-only assessment
 
 - First distinguish plugin availability from engine availability. If the hook reports that setup is required, say that no runtime assessment was performed.
-- The foundation CLI contract provides `dotnet-nudge version`, `dotnet-nudge doctor [--workspace PATH] [--state-dir PATH] --json`, and read-only `dotnet-nudge scan --workspace PATH [--state-dir PATH] --json` / `dotnet-nudge status --workspace PATH [--state-dir PATH] --json`. Use only commands listed by the installed executable's `--help`.
+- The CLI contract provides `dotnet-nudge version`, `dotnet-nudge doctor [--workspace PATH] [--state-dir PATH] --json`, and read-only `dotnet-nudge scan --workspace PATH [--state-dir PATH] --json` / `dotnet-nudge status --workspace PATH [--state-dir PATH] --json`. Use only commands listed by the installed executable's `--help`. With a working MCP connection, prefer `nudge_status` and an explicit `nudge_scan` for pending coverage.
 - Quote workspace and state paths, especially when they contain spaces. Do not use a guessed or unverified engine path.
 - Report the scope, evidence source, and any unavailable checks. Do not run restore, build, tests, package downloads, or SDK/workload installation as part of status.
 
@@ -25,5 +25,5 @@ description: Check dotnet-nudge availability and report only verified .NET maint
 
 ## Supported and not yet implemented
 
-- The engine foundation supports `version`, read-only `scan`/`status`, `doctor`, and structured `decision` CLI commands. This plugin package supplies no MCP endpoint.
-- A hook schema or setup diagnostic is not evidence that a scan ran. No MCP or trial command is implemented.
+- The engine supports a local MCP endpoint when the self-contained executable is on the host `PATH`. Missing runtime/connection means no MCP assessment ran.
+- A hook schema or setup diagnostic is not evidence that a scan ran. Actual trial execution is not integrated.

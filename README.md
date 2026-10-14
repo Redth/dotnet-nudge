@@ -17,11 +17,13 @@ dependencies, under writable user data.
 `runtime-manifest.json` intentionally has no release artifacts until a real
 release is published.
 
-The separate engine foundation exposes `version`, read-only `scan`/`status`,
-`doctor`, and structured `decision` CLI commands. This plugin package does not
-provide a trial runner or MCP server; it deliberately enables no MCP server.
-There is no published engine release yet, and hook/manifest schema validation
-does not prove end-to-end chat or model delivery.
+The engine exposes `version`, read-only `scan`/`status`, `doctor`, structured
+`decision`, and a local stdio `mcp` command. The plugin declares that server
+in portable `mcp.json` for Copilot CLI and native `.mcp.json` for Claude Code.
+It starts only after the self-contained engine is installed and its directory
+is on the host's `PATH`; plugin installation alone still cannot start the
+engine. No release is published yet. The trial module is not integrated, and
+hook/schema validation does not prove end-to-end model delivery.
 
 For local source development, once the foundation source is present:
 
@@ -48,6 +50,7 @@ dotnet run --project src/DotnetNudge/DotnetNudge.csproj -- status --workspace "$
 
 See [plugin development](docs/plugin-development.md) for isolated validation,
 hook details, setup constraints, and compatibility limitations, and the
+[integration contract](docs/integration.md) for MCP and worker behavior, and the
 [implementation plan](docs/implementation-plan.md) for the broader roadmap.
 
 ## Installation
