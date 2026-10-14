@@ -1,0 +1,46 @@
+{
+  "version": 4,
+  "targets": {
+    "net8.0": {
+      "Acme.Parent/1.0.0": {
+        "type": "package",
+        "dependencies": { "Acme.Child": "1.2.0" }
+      },
+      "Acme.Child/1.2.0": { "type": "package" }
+    },
+    "net10.0/osx-arm64": {
+      "Acme.Parent/1.0.0": {
+        "type": "package",
+        "dependencies": { "Acme.Child": "1.2.0" }
+      },
+      "Acme.Child/1.2.0": { "type": "package" }
+    }
+  },
+  "libraries": {
+    "Acme.Parent/1.0.0": { "sha512": "", "type": "package", "path": "acme.parent/1.0.0", "files": [] },
+    "Acme.Child/1.2.0": { "sha512": "", "type": "package", "path": "acme.child/1.2.0", "files": [] }
+  },
+  "projectFileDependencyGroups": { "net8.0": ["Acme.Parent >= 1.0.0"], "net10.0": ["Acme.Parent >= 1.0.0"] },
+  "packageFolders": { "{CACHE}/": {} },
+  "project": {
+    "version": "1.0.0",
+    "restore": {
+      "projectUniqueName": "{PROJECT}",
+      "projectName": "Fixture",
+      "projectPath": "{PROJECT}",
+      "packagesPath": "{CACHE}",
+      "outputPath": "{OUTPUT}",
+      "originalTargetFrameworks": ["net8.0", "net10.0"],
+      "sources": {},
+      "frameworks": { "net8.0": { "targetAlias": "net8.0" }, "net10.0": { "targetAlias": "net10.0" } }
+    },
+    "frameworks": {
+      "net8.0": { "targetAlias": "net8.0", "dependencies": {
+        "Acme.Parent": { "target": "Package", "version": "[1.0.0, )", "versionCentrallyManaged": true }
+      } },
+      "net10.0": { "targetAlias": "net10.0", "dependencies": {
+        "Acme.Parent": { "target": "Package", "version": "[1.0.0, )", "versionCentrallyManaged": true }
+      } }
+    }
+  }
+}
