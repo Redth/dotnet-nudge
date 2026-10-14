@@ -125,3 +125,16 @@ provide an independent sandbox. Windows trial execution and platform workload
 installers are unsupported. MCP subprocess fixtures verify the protocol,
 scoped scans, decisions, offline evidence and an approved trial; they do not
 certify host conversational delivery or arbitrary untrusted build isolation.
+
+Independent macOS headless Copilot CLI 1.0.98-2 acceptance used an isolated
+`COPILOT_HOME`, the explicitly permitted `gpt-6-luna` model, a locally installed
+engine on `PATH`, and a shared state path. The plugin MCP connected,
+`nudge-maintain` loaded, and an actual `nudge_register`/`nudge_package_context`
+roundtrip read a restored `Nudge.Acceptance` 1.1.0 package and its exact
+reference bytes. A separate headless session with `NUDGE_ENGINE_PATH` and
+the same state received session-start hook context for a synthetic high-priority
+SDK-servicing 10.0.401-to-10.0.402 finding; `nudge_status` confirmed its
+high/partial evidence without another scan. Shell, write, URL, trial, and
+decision actions were denied during that acceptance. This verifies that
+specific Copilot headless host path, not Claude Code, IDE hosts, other OS
+conversations, or model acceptance of suggested changes.

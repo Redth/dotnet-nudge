@@ -57,6 +57,12 @@ hook details, setup constraints, and compatibility limitations, and the
 [integration contract](docs/integration.md) for MCP and worker behavior, and the
 [implementation plan](docs/implementation-plan.md) for the broader roadmap.
 
+Independent macOS headless Copilot CLI acceptance confirmed MCP connection,
+package-guidance reading, and cached session-start hook context with a
+synthetic SDK finding using an explicitly installed local engine. It does not
+certify Claude Code, IDE hosts, other operating systems' conversations, or
+execution of suggested changes; see the [qualified evidence](docs/integration.md).
+
 ## Installation
 
 After this marketplace entry is available from the repository's published
