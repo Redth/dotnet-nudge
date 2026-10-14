@@ -14,6 +14,7 @@ static async Task<int> Run(string[] args)
             scan --workspace PATH [--state-dir PATH] --json
             status --workspace PATH [--state-dir PATH] --json
             package-context --workspace PATH [--handle EXACT_HANDLE] [--state-dir PATH] --json
+            package-assess --workspace PATH --project RELATIVE_PROJECT --framework TFM --package ID --sources NAME[,NAME...] --approve-metadata [--rid RID] [--state-dir PATH] --json
             decision --workspace PATH --finding ID --revision REV --action snooze|skip-version|disable-category|enable-category [--until TIMESTAMP] [--state-dir PATH] --json
             doctor [--workspace PATH] [--state-dir PATH] --json
             hook --host copilot|claude --event session-start|prompt-submit|post-tool-use|session-end [--state-dir PATH]
@@ -32,9 +33,9 @@ static async Task<int> Run(string[] args)
         var options = new Dictionary<string, string>(StringComparer.Ordinal);
         for (var i = 1; i < args.Length; i++)
         {
-            if (args[i] == "--json")
+            if (args[i] is "--json" or "--approve-metadata")
             {
-                options.Add("--json", "true");
+                options.Add(args[i], "true");
                 continue;
             }
             if (!args[i].StartsWith("--", StringComparison.Ordinal) ||
@@ -46,6 +47,8 @@ static async Task<int> Run(string[] args)
         {
             "scan" or "status" => new[] { "--workspace", "--state-dir", "--json" },
             "package-context" => ["--workspace", "--handle", "--state-dir", "--json"],
+            "package-assess" => ["--workspace", "--project", "--framework", "--package",
+                "--sources", "--approve-metadata", "--rid", "--state-dir", "--json"],
             "mcp" => ["--state-dir"],
             "decision" => ["--workspace", "--state-dir", "--json", "--finding", "--revision", "--action", "--until"],
             "doctor" => ["--workspace", "--state-dir", "--json"],
@@ -67,6 +70,8 @@ static async Task<int> Run(string[] args)
         if (args[0] == "doctor")
         {
             var root = options.GetValueOrDefault("--workspace");
+            if (root is not null && !Path.IsPathFullyQualified(root))
+                throw new ArgumentException("Workspace path must be absolute.");
             if (root is not null && !Directory.Exists(root))
                 throw new DirectoryNotFoundException(root);
             var identity = root is null ? ((string Repository, string Worktree)?)null
@@ -101,7 +106,9 @@ static async Task<int> Run(string[] args)
             Console.WriteLine(HookAdapter.Handle(Required("--host"), Required("--event"), payload, state));
             return 0;
         }
-        var workspace = WorkspaceDiscovery.Canonical(Required("--workspace"));
+        var workspace = Required("--workspace");
+        if (!Path.IsPathFullyQualified(workspace))
+            throw new ArgumentException("Workspace path must be absolute.");
         object result;
         switch (args[0])
         {
@@ -113,6 +120,13 @@ static async Task<int> Run(string[] args)
                 break;
             case "package-context":
                 result = await service.PackageContextAsync(workspace, options.GetValueOrDefault("--handle"));
+                break;
+            case "package-assess":
+                result = await service.AssessPackageAsync(workspace, Required("--project"),
+                    Required("--framework"), options.GetValueOrDefault("--rid"), Required("--package"),
+                    Required("--sources").Split(',', StringSplitOptions.TrimEntries)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase),
+                    options.ContainsKey("--approve-metadata"));
                 break;
             case "decision":
                 if (!Enum.TryParse<DecisionAction>(Required("--action").Replace("-", ""), true, out var action))

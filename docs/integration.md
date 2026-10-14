@@ -18,7 +18,8 @@ The MCP tools accept an absolute `workspace` path. If the client advertises MCP
 roots, the requested canonical path must be within a root. Clients without
 roots can explicitly register an absolute workspace using `nudge_register`;
 the server never treats its installation directory or process cwd as the
-workspace. The following tools currently expose versioned JSON as text:
+workspace. CLI and hook workspace admission also require an absolute path.
+The following tools currently expose versioned JSON as text:
 
 | Tool | Behavior |
 | --- | --- |
@@ -27,11 +28,15 @@ workspace. The following tools currently expose versioned JSON as text:
 | `nudge_scan(workspace)` | Run an explicit read-only scan and persist its snapshot. |
 | `nudge_context(workspace, findingId)` | Return current finding evidence without running third-party instructions. |
 | `nudge_package_context(workspace, handle?)` | List exact restored-package skill handles or read one matching skill and linked references as inert data. |
+| `nudge_package_assess(workspace, project, framework, packageId, approvedSources, acquisitionApproved, runtimeIdentifier?)` | After explicit approval of every named configured candidate/audit source, read metadata only for one exact restored package scope. |
 | `nudge_decide(workspace, findingId, revision, action, until?)` | Record a revision-bound snooze, exact-version skip, disable-category or enable-category. |
 | `nudge_preferences(workspace, findingId?, revision?, action?)` | Read current suppressions or change a category with current evidence. |
 | `nudge_trial()` | Returns blocked coverage until the reviewed trial module is integrated; no trial is run. |
 
 `status`, `scan`, `package-context`, and `decision` CLI commands use the same service/state layer.
+`package-assess --workspace PATH --project RELATIVE_PROJECT --framework TFM
+--package ID --sources NAME[,NAME...] --approve-metadata [--rid RID] --json`
+performs the corresponding explicitly approved metadata-only assessment.
 `doctor --workspace PATH --json` reports cached scope coverage without scanning
 and does not infer success from an absent worker or report.
 `hook` registers its host-provided workspace and queues a scan on session

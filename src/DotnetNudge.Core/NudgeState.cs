@@ -161,12 +161,14 @@ public sealed class NudgeState : IDisposable
         using var transaction = connection.BeginTransaction();
         using var read = connection.CreateCommand();
         read.Transaction = transaction;
-        read.CommandText = "SELECT report, scanned FROM snapshots";
+        read.CommandText = "SELECT length(CAST(report AS BLOB)), report, scanned FROM snapshots";
         using (var rows = read.ExecuteReader())
         {
             while (rows.Read())
             {
-                var report = JsonSerializer.Deserialize<ScanReport>(rows.GetString(0), Contract.Json)
+                if (rows.GetInt64(0) > 32 * 1024 * 1024)
+                    throw new InvalidDataException("Legacy scan report exceeds 32 MiB; preserve state.");
+                var report = JsonSerializer.Deserialize<ScanReport>(rows.GetString(1), Contract.Json)
                     ?? throw new InvalidDataException("Cannot migrate a null scan report.");
                 var workspace = report.Workspace with
                 {
@@ -181,9 +183,8 @@ public sealed class NudgeState : IDisposable
                 insert.Parameters.AddWithValue("$s", workspace.WorkspaceId);
                 insert.Parameters.AddWithValue("$w", workspace.WorktreeId);
                 insert.Parameters.AddWithValue("$r", workspace.RepositoryId);
-                insert.Parameters.AddWithValue("$body", JsonSerializer.Serialize(
-                    report with { Workspace = workspace }, Contract.Json));
-                insert.Parameters.AddWithValue("$time", rows.GetInt64(1));
+                insert.Parameters.AddWithValue("$body", SerializeReport(report with { Workspace = workspace }));
+                insert.Parameters.AddWithValue("$time", rows.GetInt64(2));
                 insert.ExecuteNonQuery();
             }
         }
@@ -213,7 +214,7 @@ public sealed class NudgeState : IDisposable
         command.Parameters.AddWithValue("$s", report.Workspace.WorkspaceId);
         command.Parameters.AddWithValue("$w", report.Workspace.WorktreeId);
         command.Parameters.AddWithValue("$r", report.Workspace.RepositoryId);
-        command.Parameters.AddWithValue("$body", JsonSerializer.Serialize(report, Contract.Json));
+        command.Parameters.AddWithValue("$body", SerializeReport(report));
         command.Parameters.AddWithValue("$time", report.ScannedAt.ToUnixTimeSeconds());
         command.ExecuteNonQuery();
         command.CommandText = """
@@ -226,10 +227,13 @@ public sealed class NudgeState : IDisposable
     public ScanReport? Latest(string workspace)
     {
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT report FROM workspace_snapshots WHERE workspace=$s";
+        command.CommandText = "SELECT length(CAST(report AS BLOB)),report FROM workspace_snapshots WHERE workspace=$s";
         command.Parameters.AddWithValue("$s", workspace);
-        return command.ExecuteScalar() is string json
-            ? JsonSerializer.Deserialize<ScanReport>(json, Contract.Json) : null;
+        using var reader = command.ExecuteReader();
+        if (!reader.Read()) return null;
+        if (reader.GetInt64(0) > 32 * 1024 * 1024)
+            throw new InvalidDataException("Cached scan report exceeds 32 MiB; preserve state and rescan.");
+        return JsonSerializer.Deserialize<ScanReport>(reader.GetString(1), Contract.Json);
     }
 
     public StatusReport Status(string repository, string worktree, string workspace)
@@ -341,11 +345,20 @@ public sealed class NudgeState : IDisposable
         using var transaction = connection.BeginTransaction();
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "SELECT report FROM workspace_snapshots WHERE workspace=$workspace AND repository=$r";
+        command.CommandText = """
+            SELECT length(CAST(report AS BLOB)),report FROM workspace_snapshots
+            WHERE workspace=$workspace AND repository=$r
+            """;
         command.Parameters.AddWithValue("$workspace", workspace);
         command.Parameters.AddWithValue("$r", repository);
-        var report = command.ExecuteScalar() is string json
-            ? JsonSerializer.Deserialize<ScanReport>(json, Contract.Json) : null;
+        ScanReport? report = null;
+        using (var row = command.ExecuteReader())
+            if (row.Read())
+            {
+                if (row.GetInt64(0) > 32 * 1024 * 1024)
+                    throw new InvalidDataException("Cached scan report exceeds 32 MiB; preserve state and rescan.");
+                report = JsonSerializer.Deserialize<ScanReport>(row.GetString(1), Contract.Json);
+            }
         var finding = report?.Findings.SingleOrDefault(f => f.Id == findingId);
         if (finding is null || finding.Revision != revision)
             throw new InvalidOperationException("Finding missing or revision superseded; run status and decide on current evidence.");
@@ -476,6 +489,8 @@ public sealed class NudgeState : IDisposable
 
     public void Register(string root, TimeSpan activeFor, string owner = "manual")
     {
+        if (!Path.IsPathFullyQualified(root))
+            throw new ArgumentException("Workspace admission requires an absolute root.", nameof(root));
         root = WorkspaceDiscovery.Canonical(root);
         if (!Directory.Exists(root)) throw new DirectoryNotFoundException(root);
         var (repository, worktree) = WorkspaceDiscovery.Identities(root);
@@ -708,7 +723,7 @@ public sealed class NudgeState : IDisposable
                 """;
             command.Parameters.AddWithValue("$worktree", report.Workspace.WorktreeId);
             command.Parameters.AddWithValue("$repository", report.Workspace.RepositoryId);
-            command.Parameters.AddWithValue("$body", JsonSerializer.Serialize(report, Contract.Json));
+            command.Parameters.AddWithValue("$body", SerializeReport(report));
             command.Parameters.AddWithValue("$scanned", report.ScannedAt.ToUnixTimeSeconds());
             command.ExecuteNonQuery();
         }
@@ -749,6 +764,14 @@ public sealed class NudgeState : IDisposable
     }
 
     public sealed record ScanJob(string Workspace, string Root, long Requested, int Attempts);
+
+    static string SerializeReport(ScanReport report)
+    {
+        var body = JsonSerializer.Serialize(report, Contract.Json);
+        if (Encoding.UTF8.GetByteCount(body) > 32 * 1024 * 1024)
+            throw new InvalidDataException("Scan report exceeds 32 MiB; narrow the admitted workspace.");
+        return body;
+    }
 
     public void Cache(string source, string body, string? etag, bool revalidated = false)
     {

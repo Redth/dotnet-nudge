@@ -73,6 +73,18 @@ public sealed class FoundationTests
     }
 
     [Fact]
+    public void AdmissionRejectsRelativeHostWorkspaceInsteadOfUsingProcessCwd()
+    {
+        using var fixture = new Fixture();
+        using var state = fixture.State();
+        using var service = new NudgeService(state);
+        Assert.Throws<ArgumentException>(() => state.Register(".", TimeSpan.FromMinutes(1)));
+        Assert.Throws<ArgumentException>(() => service.Status("."));
+        Assert.Throws<ArgumentException>(() => HookAdapter.Handle("copilot", "session-start",
+            """{"cwd":".","session_id":"relative"}""", state));
+    }
+
+    [Fact]
     public void DiscoveryKeepsScopedDeclarationsAndAvoidsGeneratedDirectories()
     {
         using var fixture = new Fixture();

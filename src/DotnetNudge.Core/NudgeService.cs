@@ -6,16 +6,19 @@ public sealed class NudgeService(NudgeState state, string? owner = null, bool cl
 {
     readonly string sessionOwner = owner ?? "cli:" + Guid.NewGuid().ToString("N");
     readonly HashSet<string> registered = new(StringComparer.Ordinal);
+    static string AdmittedPath(string root) =>
+        Path.IsPathFullyQualified(root) ? WorkspaceDiscovery.Canonical(root)
+            : throw new ArgumentException("Workspace path must be absolute.", nameof(root));
     public StatusReport Status(string root)
     {
-        root = WorkspaceDiscovery.Canonical(root);
+        root = AdmittedPath(root);
         var (repository, worktree) = WorkspaceDiscovery.Identities(root);
         return state.Status(repository, worktree, WorkspaceDiscovery.ScopeId(root));
     }
 
     public async Task<ScanReport> ScanAsync(string root, CancellationToken cancellationToken = default)
     {
-        root = WorkspaceDiscovery.Canonical(root);
+        root = AdmittedPath(root);
         if (!Directory.Exists(root)) throw new DirectoryNotFoundException(root);
         state.Register(root, TimeSpan.FromMinutes(15), sessionOwner);
         registered.Add(root);
@@ -46,18 +49,26 @@ public sealed class NudgeService(NudgeState state, string? owner = null, bool cl
     public DecisionResult Decide(string root, string id, string revision, DecisionAction action,
         DateTimeOffset? until = null)
     {
-        root = WorkspaceDiscovery.Canonical(root);
+        root = AdmittedPath(root);
         var (repository, _) = WorkspaceDiscovery.Identities(root);
         return state.Decide(repository, WorkspaceDiscovery.ScopeId(root), id, revision, action, until);
     }
 
     public Task<PackageContextReport> PackageContextAsync(string root, string? handle = null,
         CancellationToken token = default) =>
-        PackageIntegration.ContextAsync(WorkspaceDiscovery.Discover(root), handle, token);
+        PackageIntegration.ContextAsync(WorkspaceDiscovery.Discover(AdmittedPath(root)), handle, token);
+
+    public Task<PackageAssessmentReport> AssessPackageAsync(string root, string project,
+        string framework, string? runtimeIdentifier, string packageId,
+        IReadOnlySet<string> approvedSourceNames, bool acquisitionApproved,
+        CancellationToken token = default) =>
+        PackageIntegration.AssessAsync(WorkspaceDiscovery.Discover(AdmittedPath(root)),
+            project, framework, runtimeIdentifier, packageId, approvedSourceNames,
+            acquisitionApproved, token);
 
     public StatusReport Register(string root)
     {
-        root = WorkspaceDiscovery.Canonical(root);
+        root = AdmittedPath(root);
         state.Register(root, TimeSpan.FromMinutes(15), sessionOwner);
         registered.Add(root);
         state.RequestScan(WorkspaceDiscovery.ScopeId(root));

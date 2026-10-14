@@ -67,6 +67,7 @@ public sealed class ProtocolTests
             Assert.Contains(tools, t => t.Name == "nudge_decide");
             Assert.Contains(tools, t => t.Name == "nudge_trial");
             Assert.Contains(tools, t => t.Name == "nudge_preferences");
+            Assert.Contains(tools, t => t.Name == "nudge_package_assess");
             async Task<JsonDocument> Call(string tool, Dictionary<string, object?> args)
             {
                 var result = await client.CallToolAsync(tool, args, cancellationToken: timeout.Token);
@@ -240,6 +241,36 @@ public sealed class ProtocolTests
     }
 
     [Fact]
+    public void OversizedCachedSnapshotIsRejectedBeforeJsonMaterialization()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "nudge-oversized-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var stateDir = Path.Combine(root, "state");
+            using var state = new NudgeState(stateDir);
+            var (repo, tree) = WorkspaceDiscovery.Identities(root);
+            var workspace = WorkspaceDiscovery.ScopeId(root);
+            using var db = new SqliteConnection($"Data Source={Path.Combine(stateDir, "state.sqlite")}");
+            db.Open();
+            using var command = db.CreateCommand();
+            command.CommandText = """
+                INSERT INTO workspace_snapshots(workspace,worktree,repository,report,scanned)
+                VALUES($workspace,$tree,$repo,CAST(zeroblob(33554433) AS TEXT),1)
+                """;
+            command.Parameters.AddWithValue("$workspace", workspace);
+            command.Parameters.AddWithValue("$tree", tree);
+            command.Parameters.AddWithValue("$repo", repo);
+            command.ExecuteNonQuery();
+            Assert.Throws<InvalidDataException>(() => state.Status(repo, tree, workspace));
+            Assert.Throws<InvalidDataException>(() =>
+                state.Decide(repo, workspace, "missing", "r1", DecisionAction.Snooze,
+                    DateTimeOffset.UtcNow.AddDays(1)));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
     public void FailedReadOnlyJobsStopRetryingAndExposeDiagnostics()
     {
         var root = Path.Combine(Path.GetTempPath(), "nudge-failure-" + Guid.NewGuid().ToString("N"));
@@ -375,6 +406,13 @@ public sealed class ProtocolTests
                 File.WriteAllText(Path.Combine(skill, "SKILL.md"),
                     "---\nname: review\ndescription: Read this package\n---\n[Details](details.md)\n");
                 File.WriteAllText(Path.Combine(skill, "details.md"), "Local guidance reference.");
+                var child = Path.Combine(cache, "acme.child", "1.2.0");
+                var childSkill = Path.Combine(child, "skills", "child");
+                Directory.CreateDirectory(childSkill);
+                File.WriteAllText(Path.Combine(child, "acme.child.nuspec"),
+                    """<package><metadata><id>Acme.Child</id><version>1.2.0</version></metadata></package>""");
+                File.WriteAllText(Path.Combine(childSkill, "SKILL.md"),
+                    "---\nname: child\ndescription: Transitive package guidance\n---\nChild guidance.\n");
                 var assets = Path.Combine(root, "obj", "project.assets.json");
                 Directory.CreateDirectory(Path.GetDirectoryName(assets)!);
                 var fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "graph.json"))
@@ -390,11 +428,21 @@ public sealed class ProtocolTests
                     c.Assessment == Assessment.Confirmed);
                 using var state = new NudgeState(stateDir);
                 using var service = new NudgeService(state);
+                await Assert.ThrowsAsync<ArgumentException>(() => service.AssessPackageAsync(root,
+                    "App.csproj", "net8.0", null, "Acme.Parent",
+                    new HashSet<string> { "not-approved" }, acquisitionApproved: false));
+                await Assert.ThrowsAsync<ArgumentException>(() => service.AssessPackageAsync(root,
+                    "App.csproj", "net8.0", null, "Acme.Parent",
+                    new HashSet<string> { "not-configured" }, acquisitionApproved: true));
                 var listed = await service.PackageContextAsync(root);
-                Assert.Equal(2, listed.Skills.Count);
+                Assert.Equal(4, listed.Skills.Count);
                 Assert.Contains(listed.Skills, s => s.Framework == "net10.0" &&
                     s.RuntimeIdentifier == "osx-arm64");
-                var handle = listed.Skills.Single(s => s.Framework == "net8.0").Handle;
+                var childHandle = listed.Skills.Single(s =>
+                    s.Framework == "net8.0" && s.PackageId == "Acme.Child").Handle;
+                Assert.Contains("Child guidance.", (await service.PackageContextAsync(root, childHandle)).Entry!.Text);
+                var handle = listed.Skills.Single(s =>
+                    s.Framework == "net8.0" && s.PackageId == "Acme.Parent").Handle;
                 var selected = await service.PackageContextAsync(root, handle);
                 Assert.Equal(handle, selected.Selected!.Handle);
                 Assert.Contains("Details", selected.Entry!.Text);

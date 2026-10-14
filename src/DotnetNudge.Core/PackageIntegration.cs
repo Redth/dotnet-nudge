@@ -11,12 +11,14 @@ public sealed record PackageSkillDescriptor(string Handle, string Name, string D
 public sealed record PackageContextReport(int SchemaVersion, string WorkspaceId, Assessment Assessment,
     IReadOnlyList<PackageSkillDescriptor> Skills, PackageSkillDescriptor? Selected,
     GuidanceDocument? Entry, IReadOnlyList<GuidanceDocument> References, string? Diagnostic);
+public sealed record PackageAssessmentReport(int SchemaVersion, string WorkspaceId,
+    string AssetsFingerprint, PackageAssessment Assessment);
 
 public static class PackageIntegration
 {
     const int MaxGraphs = 8;
     const int MaxAssessments = 4;
-    const int MaxGuidancePackages = 32;
+    const int MaxGuidancePackages = 16;
 
     public static async Task<PackageScanResult> ScanAsync(WorkspaceInventory workspace,
         string stateDirectory, CancellationToken token)
@@ -135,24 +137,29 @@ public static class PackageIntegration
         string? selectedAssets = null;
         string? selectedProject = null;
         var diagnostics = new List<string>();
+        var examined = 0;
         if (workspace.Projects.Count == 0)
             diagnostics.Add("No SDK-style projects were discovered in the admitted workspace.");
-        foreach (var project in workspace.Projects.Take(MaxGraphs))
+        var projects = workspace.Projects.Take(MaxGraphs).ToArray();
+        for (var index = 0; index < projects.Length; index++)
         {
+            var project = projects[index];
+            token.ThrowIfCancellationRequested();
             var (graph, _) = ReadGraph(workspace, project, reader);
             if (graph.Status != EvidenceStatus.Complete)
             {
                 diagnostics.Add($"{project}: {graph.Diagnostic}");
                 continue;
             }
-            var direct = graph.Packages.Where(n => n.Direct).ToArray();
-            foreach (var missing in direct.Where(n => n.PackagePath is null).Take(8))
+            var resolved = graph.Packages.ToArray();
+            foreach (var missing in resolved.Where(n => n.PackagePath is null).Take(8))
                 diagnostics.Add($"{project}/{missing.Id}@{missing.Version}: exact restored package path unavailable.");
-            var restored = direct.Where(n => n.PackagePath is not null).ToArray();
-            if (restored.Length > MaxGuidancePackages)
-                diagnostics.Add($"{project}: guidance limited to {MaxGuidancePackages} direct package entries.");
-            foreach (var node in restored.Take(MaxGuidancePackages))
+            var restored = resolved.Where(n => n.PackagePath is not null).ToArray();
+            var remaining = MaxGuidancePackages - examined;
+            foreach (var node in restored.Take(remaining))
             {
+                token.ThrowIfCancellationRequested();
+                examined++;
                 var guidance = new PackageGuidanceReader().ReadRestored(node);
                 if (guidance.Status != EvidenceStatus.Complete)
                 {
@@ -172,6 +179,13 @@ public static class PackageIntegration
                     selectedAssets = graph.AssetsPath;
                     selectedProject = Path.Combine(workspace.Root, project);
                 }
+            }
+            if (examined >= MaxGuidancePackages)
+            {
+                if (restored.Length > remaining || index + 1 < projects.Length ||
+                    workspace.Projects.Count > MaxGraphs)
+                    diagnostics.Add($"Guidance inspection limited to {MaxGuidancePackages} resolved package entries.");
+                break;
             }
         }
         if (handle is not null && selected is null)
@@ -221,6 +235,43 @@ public static class PackageIntegration
                 workspace.Projects.Count == 0 ? Assessment.Unknown : Assessment.Partial, skills,
             selected, entry, references,
             diagnostics.Count == 0 ? null : string.Join("; ", diagnostics.Take(8)));
+    }
+
+    public static async Task<PackageAssessmentReport> AssessAsync(WorkspaceInventory workspace,
+        string project, string framework, string? runtimeIdentifier, string packageId,
+        IReadOnlySet<string> approvedSourceNames, bool acquisitionApproved,
+        CancellationToken token = default)
+    {
+        if (!acquisitionApproved || approvedSourceNames.Count == 0 ||
+            approvedSourceNames.Any(string.IsNullOrWhiteSpace))
+            throw new ArgumentException("Explicit metadata acquisition approval and exact source names are required.");
+        if (!workspace.Projects.Contains(project, StringComparer.Ordinal))
+            throw new ArgumentException("Project must be an exact relative path in the admitted workspace.");
+        var reader = new PackageGraphReader();
+        var (graph, path) = ReadGraph(workspace, project, reader);
+        if (graph.Status != EvidenceStatus.Complete)
+            throw new InvalidOperationException(graph.Diagnostic ?? "Exact restored graph is unavailable.");
+        var node = graph.Packages.SingleOrDefault(p =>
+            p.Framework == framework && p.RuntimeIdentifier == runtimeIdentifier &&
+            p.Id.Equals(packageId, StringComparison.OrdinalIgnoreCase))
+            ?? throw new ArgumentException("No exact package/TFM/RID identity in the restored graph.");
+        var policy = new PackageSourcePolicy(Path.GetDirectoryName(path)!);
+        if (policy.Allowed(node.Id, approvedSourceNames).Count == 0)
+            throw new ArgumentException("No configured and permitted package source matches the approved names.");
+        if (policy.AuditSources.Any(s => !approvedSourceNames.Contains(s.Name)))
+            throw new ArgumentException("All configured audit sources must be named in the approved source set.");
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(TimeSpan.FromSeconds(45));
+        try
+        {
+            var assessment = await new PackageIntelligence(policy).AssessAsync(node, graph,
+                approvedSourceNames, cancellationToken: deadline.Token);
+            return new(Contract.Version, workspace.WorkspaceId, graph.Fingerprint, assessment);
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        {
+            throw new IOException("Package metadata assessment exceeded 45 seconds.");
+        }
     }
 
     static (PackageGraph Graph, string Project) ReadGraph(WorkspaceInventory workspace,

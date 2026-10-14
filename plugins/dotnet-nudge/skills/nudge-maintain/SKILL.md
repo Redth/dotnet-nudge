@@ -16,6 +16,7 @@ description: Review .NET maintenance evidence and explain the explicitly local d
 ## User approval
 
 - Before a supported change, name the exact package/version or tool, files and commands involved, and whether it would download or execute anything. Ask for approval for that bounded action.
+- For an unmapped package metadata query, first ask the user to approve the exact project, TFM, optional RID, package ID, and configured candidate/audit source names. Only then use `nudge_package_assess` or `dotnet-nudge package-assess` with `--approve-metadata`; this authorizes metadata reads, not downloading a package or running a trial.
 - A request to review a finding is not permission to execute a change.
 - Before recording a decision, show the exact finding ID, revision, action, and optional snooze expiry to the user.
 

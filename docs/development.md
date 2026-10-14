@@ -12,11 +12,11 @@ dotnet publish src/DotnetNudge/DotnetNudge.csproj -c Release -r osx-arm64 --self
 ```
 
 Replace `osx-arm64` with your machine's runtime identifier. The executable is
-`dotnet-nudge` (`dotnet-nudge.exe` on Windows). Dependencies in Core are
-Microsoft.Data.Sqlite and NuGet.Versioning. Data is stored in
+`dotnet-nudge` (`dotnet-nudge.exe` on Windows). Core references the reviewed Packages library and pins NuGet.Versioning
+6.14.3 alongside Microsoft.Data.Sqlite. Data is stored in
 `<OS application data>/dotnet-nudge/state.sqlite`, overridden by
 `NUDGE_STATE_DIR` or `--state-dir PATH`. Do not place personal decisions in Git.
-SQLite state schema v2 migrates v1 snapshots, queued scans, and version skips in
+SQLite state schema v3 migrates v1/v2 snapshots, queued scans, and version skips in
 place. An unsupported schema version raises an error without deleting state.
 
 ## CLI and versioned JSON
@@ -29,15 +29,21 @@ was supplied, plus stderr diagnostics. `help`/`--help` and `version` are text.
 ```text
 scan --workspace PATH [--state-dir PATH] --json
 status --workspace PATH [--state-dir PATH] --json
+package-context --workspace PATH [--handle EXACT_HANDLE] [--state-dir PATH] --json
+package-assess --workspace PATH --project RELATIVE_PROJECT --framework TFM --package ID --sources NAME[,NAME...] --approve-metadata [--rid RID] [--state-dir PATH] --json
 decision --workspace PATH --finding ID --revision REV --action snooze|skip-version|disable-category|enable-category [--until RFC3339] [--state-dir PATH] --json
 doctor [--workspace PATH] [--state-dir PATH] --json
 hook --host copilot|claude --event session-start|prompt-submit|post-tool-use|session-end [--state-dir PATH]
 version
 ```
 
-`scan` reads workspace declarations and official .NET releases metadata, but
-does not restore/build/install, evaluate MSBuild, resolve an effective SDK, or
-scan a resolved NuGet graph. `status` reads only SQLite; an unscanned worktree
+`scan` reads workspace declarations, official .NET release metadata, settled
+NuGet graphs and bounded mapped-source candidate/advisory metadata; it runs
+read-only native `dotnet` probes for effective SDK selection, installed
+SDKs/runtimes and local tools. It does not restore/build/install, evaluate
+MSBuild, or prove candidate runtime compatibility. Package guidance is read
+only from exact restored paths on an explicit `package-context` request.
+`status` reads only SQLite; an unscanned worktree
 reports unknown coverage, not a clean report. `decision` rejects a finding
 absent from the current worktree snapshot or an outdated revision. Snooze
 requires a future `--until`, skip-version binds the exact candidate and
@@ -61,7 +67,7 @@ kebab-case enums. Public types in `DotnetNudge.Core`:
 
 ```text
 Evidence(Type, Uri, RetrievedAt)
-FindingScope(Project?, Framework?, SdkScope?)
+FindingScope(Project?, Framework?, SdkScope?, RuntimeIdentifier?, Source?)
 Finding(SchemaVersion, Id, SubjectKey, Revision, Kind, Priority,
         Current?, Candidate?, Scope, Assessment, Evidence[], Action,
         RequiresConsent, Category)
@@ -78,7 +84,7 @@ StatusReport(SchemaVersion, RepositoryId, WorktreeId, WorkspaceId, ScannedAt?,
              Findings[], Coverage[])
 DecisionResult(SchemaVersion, FindingId, Revision, Action, RecordedAt, Until?)
 DoctorReport(SchemaVersion, StateDirectory, Workspace?, RepositoryId?,
-             WorktreeId?, WorkspaceId?, ReleaseMetadataSource, Note)
+             WorktreeId?, WorkspaceId?, ReleaseMetadataSource, Note, Coverage?)
 ```
 
 `Assessment` is confirmed, unknown, partial, stale, or blocked. SDK candidate
@@ -107,7 +113,7 @@ MCP process is lazy/unavailable, and explicit `scan` completes them. See
 `docs/integration.md` for the MCP tool contract. No host has been end-to-end
 certified by the protocol fixture alone.
 
-Not implemented here: package/security feed checks and resolved graph
-inspection, runtime/workload/MAUI servicing, actual trials, or host plugin
-packaging. XML project/config inventory is declared
+Not implemented yet: workload/MAUI servicing and actual trials. Package
+feed checks remain partial without mapped source and complete audit evidence;
+restored graphs are observed without changing projects. XML project/config inventory is declared
 data only and does not represent evaluated MSBuild properties.

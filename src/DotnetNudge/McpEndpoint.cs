@@ -113,6 +113,19 @@ public sealed class NudgeTools(McpStateDirectory location)
                 Contract.Json));
     }
 
+    [McpServerTool(Name = "nudge_package_assess"), Description("Metadata-only package/advisory assessment for one exact restored project/TFM/RID/package, after the user explicitly approves the named configured sources (including audit sources). Does not download packages or install skills.")]
+    public async Task<string> PackageAssess(McpServer server, string workspace,
+        string project, string framework, string packageId, string[] approvedSources,
+        bool acquisitionApproved, string? runtimeIdentifier = null,
+        CancellationToken cancellationToken = default)
+    {
+        var root = await RootAsync(server, workspace, cancellationToken);
+        return await WithServiceAsync(async service => JsonSerializer.Serialize(
+            await service.AssessPackageAsync(root, project, framework, runtimeIdentifier, packageId,
+                approvedSources.ToHashSet(StringComparer.OrdinalIgnoreCase), acquisitionApproved,
+                cancellationToken), Contract.Json));
+    }
+
     [McpServerTool(Name = "nudge_decide"), Description("Record a versioned snooze, skip or category preference.")]
     public async Task<string> Decide(McpServer server, string workspace, string findingId,
         string revision, string action, string? until = null, CancellationToken cancellationToken = default)

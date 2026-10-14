@@ -22,6 +22,8 @@ public static class HookAdapter
             property.ValueKind == JsonValueKind.String ? property.GetString() : null;
         var path = String("cwd") ?? String("workspace") ?? String("workspaceRoot");
         if (path is null || !Directory.Exists(path)) return "{}";
+        if (!Path.IsPathFullyQualified(path))
+            throw new ArgumentException("Hook workspace path must be absolute.");
         var (repository, worktree) = WorkspaceDiscovery.Identities(path);
         var workspace = WorkspaceDiscovery.ScopeId(path);
         var owner = host + ":" + (String("session_id") ?? String("sessionId") ?? workspace);
