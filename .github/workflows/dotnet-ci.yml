@@ -1,0 +1,37 @@
+name: .NET foundation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test-publish:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            executable: dotnet-nudge
+          - os: macos-latest
+            rid: osx-x64
+            executable: dotnet-nudge
+          - os: windows-latest
+            rid: win-x64
+            executable: dotnet-nudge.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build
+        run: dotnet build DotnetNudge.sln --configuration Release
+      - name: Test
+        run: dotnet test tests/DotnetNudge.Tests/DotnetNudge.Tests.csproj --configuration Release --no-build
+      - name: Publish self-contained
+        run: dotnet publish src/DotnetNudge/DotnetNudge.csproj --configuration Release --runtime ${{ matrix.rid }} --self-contained true --output publish
+      - name: Smoke
+        shell: bash
+        run: ./publish/${{ matrix.executable }} version
