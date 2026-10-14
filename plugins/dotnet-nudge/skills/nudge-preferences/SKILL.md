@@ -7,6 +7,7 @@ description: Capture explicit dotnet-nudge reminder choices without claiming uns
 
 ## Read-only assessment
 
+- Prefer connected MCP tools. If CLI commands below need a fallback, use `node "<plugin-root>/scripts/run.cjs"` in place of `dotnet-nudge`; derive the plugin root from this installed skill's path, not a guessed engine location. The launcher can automatically install the verified engine but does not authorize preference changes.
 - Explain the available reminder category, finding, and version from verified scan/status evidence. If the engine does not expose those facts, state that limitation rather than inventing settings.
 - Do not read or edit private state files to infer a preference.
 

@@ -7,6 +7,7 @@ description: Review exact-approved .NET upgrade trials and their evidence and is
 
 ## Read-only assessment
 
+- Prefer connected MCP tools. If CLI commands below need a fallback, use `node "<plugin-root>/scripts/run.cjs"` in place of `dotnet-nudge`; derive the plugin root from this installed skill's path, not a guessed engine location. Automatic verified engine setup does not authorize a trial or SDK/workload installation.
 - Establish the requested project, candidate change, and evidence with `dotnet-nudge scan --workspace PATH [--state-dir PATH] --json` or `status --workspace PATH [--state-dir PATH] --json` when the installed foundation engine lists those commands in `--help`.
 - Identify missing SDKs, workloads, platform tools, and build evidence as unknown or blocked; do not install or select them.
 

@@ -7,12 +7,17 @@ stderr. The same state directory is used by CLI, hooks, and MCP. Set
 `NUDGE_STATE_DIR` for all three or pass `--state-dir` to each launcher.
 
 The portable `plugins/dotnet-nudge/mcp.json` and Claude-native `.mcp.json`
-both require a previously installed executable named `dotnet-nudge` on the
-host's `PATH`. `NUDGE_PLUGIN_DATA` points at the host's persistent plugin data,
+both invoke the shared plugin-relative Node.js launcher. Node.js 22 or newer
+must be on `PATH`; the engine does not need to be. On first connection, the
+launcher automatically installs the current RID's SHA-256-verified
+self-contained engine from this repository's release manifest, then runs it.
+An installed engine or `NUDGE_ENGINE_PATH` override bypasses download.
+`NUDGE_PLUGIN_DATA` points at the host's persistent plugin data,
 matching the hook wrapper's fallback state location. `NUDGE_STATE_DIR`
-overrides both when set for the host. Plugin installation alone cannot start
-the MCP server before an engine has been supplied locally; see
-`docs/plugin-development.md`.
+overrides both when set for the host. `NUDGE_AUTO_SETUP=0` disables automatic
+engine installation. A first release must exist for automatic setup to succeed;
+release/download failures are stderr diagnostics, never JSON-RPC findings.
+See `docs/plugin-development.md`.
 
 The MCP tools accept an absolute `workspace` path. If the client advertises MCP
 roots, the requested canonical path must be within a root. Clients without

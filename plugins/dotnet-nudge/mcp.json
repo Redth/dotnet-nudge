@@ -3,8 +3,8 @@
   "mcpServers": {
     "dotnet-nudge": {
       "type": "stdio",
-      "command": "dotnet-nudge",
-      "args": ["mcp"],
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/scripts/run.cjs", "mcp"],
       "env": {
         "NUDGE_PLUGIN_DATA": "${PLUGIN_DATA}"
       }

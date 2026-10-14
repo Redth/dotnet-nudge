@@ -6,6 +6,7 @@ on:
       - ".claude-plugin/**"
       - "plugins/dotnet-nudge/**"
       - "tests/plugin-contracts/**"
+      - "scripts/release-runtime.py"
       - "docs/plugin-development.md"
       - "README.md"
       - ".github/workflows/plugin-contracts.yml"
@@ -14,6 +15,7 @@ on:
       - ".claude-plugin/**"
       - "plugins/dotnet-nudge/**"
       - "tests/plugin-contracts/**"
+      - "scripts/release-runtime.py"
       - "docs/plugin-development.md"
       - "README.md"
       - ".github/workflows/plugin-contracts.yml"
@@ -31,5 +33,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Run offline plugin contract tests
         run: python -m unittest discover -s tests/plugin-contracts -v
+      - name: Run offline runtime bootstrap tests
+        run: node --test tests/plugin-contracts/runtime.test.cjs

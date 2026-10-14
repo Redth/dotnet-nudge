@@ -5,25 +5,27 @@ Copilot CLI and Claude Code hook adapters.
 
 ## Current status
 
-The plugin packaging and hook contracts are implemented, but there is no
-published `dotnet-nudge` engine release yet. The hook wrappers do not download
-or install a binary. To exercise a locally built engine, set
-`NUDGE_ENGINE_PATH` to its executable before starting the host. An explicitly
-provided local release archive can be installed with its exact published
-version, runtime identifier (RID), and SHA-256 digest using
-`plugins/dotnet-nudge/scripts/setup-runtime.py`; the installer verifies the
-digest and installs the complete self-contained publish tree, including native
-dependencies, under writable user data.
-`runtime-manifest.json` intentionally has no release artifacts until a real
-release is published.
+The plugin uses one launcher for MCP, hooks and CLI commands. On first MCP or
+CLI use, it automatically downloads the matching self-contained engine from
+this repository's latest stable release, verifies both the compressed archive
+and executable SHA-256 digests, and installs it under writable user data.
+Subsequent starts reuse that engine offline; no engine `PATH` modification or
+.NET SDK installation is required. **Node.js 22 or newer must be on `PATH`.**
+Hooks remain network-free and never bootstrap an engine themselves.
+
+The release workflow packages Linux, macOS and Windows x64/arm64 engines and
+publishes their generated manifest only when all six assets are ready. A first
+engine release must be available for bootstrap: otherwise, automatic setup
+reports an explicit download failure, not a successful assessment. For local source
+development, set `NUDGE_ENGINE_PATH` to a built executable; this override now
+works for both hooks and MCP. `NUDGE_AUTO_SETUP=0` disables automatic downloads.
 
 The engine exposes `version`, read-only `scan`/`status`/`package-context`/
 `toolchains`, `doctor`, structured `decision`, approved isolated `trial`
 operations, and a local stdio `mcp` command. The plugin declares that server
 in portable `mcp.json` for Copilot CLI and native `.mcp.json` for Claude Code.
-It starts only after the self-contained engine is installed and its directory
-is on the host's `PATH`; plugin installation alone still cannot start the
-engine. No release is published yet. Restored package graph changes, bounded
+Both MCP configurations use the plugin-relative launcher rather than an engine
+executable on `PATH`. Restored package graph changes, bounded
 mapped-source metadata, offline toolchain analysis, inert package guidance
 and exact-approved worktree trials are integrated. Trials run trusted build
 code without an OS sandbox; hook/schema validation does not prove
@@ -76,5 +78,8 @@ claude plugin marketplace add Redth/dotnet-nudge
 claude plugin install dotnet-nudge@dotnet-nudge-marketplace
 ```
 
-These commands install the plugin files only. They do not install the engine;
-follow `nudge-maintain` for the explicitly local runtime setup path.
+These commands install the plugin files. The MCP launcher installs the verified
+engine on first connection once an engine release is available. Restart the
+host after updating an already installed plugin so it reloads the MCP config.
+The engine download does not authorize SDK/workload installation, package
+changes, restores, builds, or trials.
