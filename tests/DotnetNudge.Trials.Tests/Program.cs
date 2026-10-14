@@ -92,8 +92,26 @@ async Task Evidence()
     Check(report.Commands.All(c => c.Executable.StartsWith(f.Root) &&
         c.Environment["NUDGE_TRIAL_ID"] == plan.Id &&
         c.Environment["DOTNET_ROOT"].StartsWith(f.Root) &&
+        c.Environment["DOTNET_ROOT_" + (plan.CandidateSdk.Rid.EndsWith("arm64") ? "ARM64" : "X64")] ==
+            c.Environment["DOTNET_ROOT"] &&
+        c.Environment["DOTNET_CLI_HOME"].StartsWith(f.Root) &&
+        c.Environment["HOME"] == c.Environment["DOTNET_CLI_HOME"] &&
         c.Environment["NUGET_PACKAGES"].StartsWith(f.Root) &&
+        c.Environment["NUGET_HTTP_CACHE_PATH"].StartsWith(f.Root) &&
+        c.Environment["NUGET_PLUGINS_CACHE_PATH"].StartsWith(f.Root) &&
+        c.Environment["NUGET_SCRATCH"].StartsWith(f.Root) &&
+        c.Environment["TMPDIR"].StartsWith(f.Root) &&
+        c.Environment["TMP"] == c.Environment["TMPDIR"] &&
+        c.Environment["TEMP"] == c.Environment["TMPDIR"] &&
         c.ExitCode == 0), "command identity/environment incorrect");
+    var baselineEnvironment = report.Commands.First(c => c.Stage == "baseline").Environment;
+    var candidateEnvironment = report.Commands.First(c => c.Stage == "candidate").Environment;
+    Check(baselineEnvironment["DOTNET_ROOT"] != candidateEnvironment["DOTNET_ROOT"] &&
+        baselineEnvironment["DOTNET_CLI_HOME"] != candidateEnvironment["DOTNET_CLI_HOME"] &&
+        baselineEnvironment["NUGET_PACKAGES"] != candidateEnvironment["NUGET_PACKAGES"] &&
+        baselineEnvironment["NUGET_HTTP_CACHE_PATH"] != candidateEnvironment["NUGET_HTTP_CACHE_PATH"] &&
+        baselineEnvironment["TMPDIR"] != candidateEnvironment["TMPDIR"],
+        "baseline and candidate shared mutable SDK, user, package, or temp roots");
     Check(report.Commands.Any(c => c.Stage == "baseline" && c.Arguments.SequenceEqual(["build", "fixture.csproj"])), "baseline build missing");
     Check(report.Commands.Any(c => c.Stage == "candidate" && c.Arguments.SequenceEqual(["build", "fixture.csproj"])), "changed build missing");
     Check(report.CandidateWorktree != report.Worktree &&
@@ -377,7 +395,7 @@ async Task ActiveCancel()
     f.Runner.Propose(plan);
     f.Runner.Approve(plan.Id, 1);
     var running = f.Runner.ExecuteAsync(plan.Id, 1);
-    var marker = Path.Combine(plan.TrialRoot, plan.Id, "home", "active-command");
+    var marker = Path.Combine(plan.TrialRoot, plan.Id, "home-baseline", "active-command");
     var deadline = DateTime.UtcNow.AddSeconds(15);
     while (!File.Exists(marker) && DateTime.UtcNow < deadline)
         await Task.Delay(20);
@@ -407,6 +425,11 @@ async Task Unsupported()
 {
     var f = await Fixture.Create("unsupported");
     var plan = f.Plan();
+    Throws<TrialException>(() => f.Runner.Propose(plan with
+    {
+        Commands = [new("restore", ["fixture.csproj"]), new("workload", ["install", "maui"]),
+            new("build", ["fixture.csproj"])]
+    }));
     var wrongRid = plan with { BaselineSdk = plan.BaselineSdk with { Rid = "win-x64" } };
     f.Runner.Propose(wrongRid);
     f.Runner.Approve(plan.Id, 1);

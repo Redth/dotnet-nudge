@@ -26,6 +26,21 @@ isolation boundary. Later roadmap phases and all-platform workload automation
 are not marked complete. See [development](development.md) for commands and
 [integration](integration.md) for public contracts, evidence, and host limits.
 
+Recent detection work added exact-version package deprecation metadata and
+independent reminders, excluding deprecated/unlisted upgrade candidates.
+Supplied offline workload evidence now surfaces missing selected workloads,
+manifest mismatches and newer same-band pinned-set review candidates. These
+retain source, scope, freshness and consent boundaries; automatic workload
+discovery and installation remain unimplemented.
+
+Trial guidance now distinguishes SDK-only major/preview experiments from TFM
+migrations and points to version-matched `dotnet/skills` guidance for the
+latter, which the nudge runner does not yet execute. Baseline and candidate
+stages now have distinct SDK, CLI-home, NuGet-cache, and temporary roots; the
+offline trial harness verifies they do not share mutable caches. The next
+Phase 4 gate is to validate actual workload installation behavior against
+these private roots on each supported platform before enabling it.
+
 ## 1. Recommendation
 
 Build **one deterministic .NET maintenance engine, distributed through this

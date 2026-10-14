@@ -13,6 +13,8 @@ using NuGet.Versioning;
 namespace DotnetNudge.Packages;
 
 public sealed record PackageAdvisory(string Url, int Severity, string Range, string AuditSource);
+public sealed record PackageDeprecation(string Source, IReadOnlyList<string> Reasons,
+    string? Message, string? AlternatePackageId, string? AlternateVersionRange);
 public sealed record UpdateCandidate(NuGetVersion Version, string Kind, string Source,
     EvidenceStatus Compatibility, string? Diagnostic);
 public sealed record RemediationPath(IReadOnlyList<string> PackageIds, string DirectParent,
@@ -22,6 +24,7 @@ public sealed record PackageAssessment(PackageNode Package, EvidenceStatus Statu
     IReadOnlyList<PackageAdvisory> Advisories, IReadOnlyList<UpdateCandidate> Candidates,
     NuGetVersion? MinimalKnownFix, IReadOnlyList<RemediationPath> Paths, IReadOnlyList<string> Diagnostics)
 {
+    public IReadOnlyList<PackageDeprecation> Deprecations { get; init; } = [];
     public string SubjectKey => string.Join('|', Package.Project, Package.Framework,
         Package.RuntimeIdentifier ?? "", Package.Id.ToLowerInvariant());
     public string EvidenceRevision => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
@@ -31,6 +34,12 @@ public sealed record PackageAssessment(PackageNode Package, EvidenceStatus Statu
             Version = Package.Version.ToNormalizedString(),
             Status,
             MinimalKnownFix = MinimalKnownFix?.ToNormalizedString(),
+            Deprecations = Deprecations.Select(d => new
+                {
+                    d.Source, d.Message, d.AlternatePackageId, d.AlternateVersionRange,
+                    Reasons = d.Reasons.Order(StringComparer.Ordinal).ToArray()
+                })
+                .OrderBy(d => d.Source, StringComparer.Ordinal).ToArray(),
             Advisories = Advisories.Select(a => new { a.AuditSource, a.Url, a.Range, a.Severity })
                 .OrderBy(a => a.AuditSource, StringComparer.Ordinal)
                 .ThenBy(a => a.Url, StringComparer.Ordinal).ThenBy(a => a.Range, StringComparer.Ordinal)
@@ -141,6 +150,7 @@ public sealed class PackageIntelligence
             }
         }
         var candidates = new List<UpdateCandidate>();
+        var deprecations = new List<PackageDeprecation>();
         foreach (var source in sources)
         {
             try
@@ -148,16 +158,32 @@ public sealed class PackageIntelligence
                 var repository = Repository.Factory.GetCoreV3(source);
                 using var cache = new SourceCacheContext { NoCache = true };
                 var metadataResource = await repository.GetResourceAsync<PackageMetadataResource>(cancellationToken);
-                var metadata = (await metadataResource.GetMetadataAsync(package.Id, includePrerelease, false,
+                var metadata = (await metadataResource.GetMetadataAsync(package.Id,
+                    includePrerelease || package.Version.IsPrerelease, true,
                     cache, NullLogger.Instance, cancellationToken)).ToArray();
                 if (metadata.Length == 0)
                 {
                     diagnostics.Add($"Version metadata unavailable from {source.Name}.");
                     continue;
                 }
-                foreach (var candidate in metadata.Where(m => m.Identity.Version > package.Version &&
+                var current = metadata.FirstOrDefault(m => m.Identity.Version == package.Version);
+                if (current is null)
+                    diagnostics.Add($"Exact resolved version metadata unavailable from {source.Name}; deprecation status is unknown.");
+                else if (await current.GetDeprecationMetadataAsync().WaitAsync(cancellationToken) is { } deprecation)
+                {
+                    var reasons = (deprecation.Reasons ?? []).Select(reason =>
+                            new[] { "Legacy", "CriticalBugs", "Other" }.FirstOrDefault(known =>
+                                known.Equals(reason, StringComparison.OrdinalIgnoreCase)))
+                        .OfType<string>().Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+                    deprecations.Add(new(source.Name, reasons.Length == 0 ? ["Other"] : reasons,
+                        deprecation.Message, deprecation.AlternatePackage?.PackageId,
+                        deprecation.AlternatePackage?.Range?.ToString()));
+                }
+                foreach (var candidate in metadata.Where(m => m.IsListed && m.Identity.Version > package.Version &&
                     (includePrerelease || !m.Identity.Version.IsPrerelease)).OrderBy(m => m.Identity.Version))
                 {
+                    if (await candidate.GetDeprecationMetadataAsync().WaitAsync(cancellationToken) is not null)
+                        continue;
                     var version = candidate.Identity.Version;
                     var compatibility = EvidenceStatus.Unknown;
                     string? reason = "Candidate dependency/framework evidence unavailable.";
@@ -202,7 +228,8 @@ public sealed class PackageIntelligence
             paths = await ParentOptions(paths, package, fix, graph, approvedSourceNames, diagnostics,
                 cancellationToken);
         return new PackageAssessment(package, diagnostics.Count > 0 ? EvidenceStatus.Partial : EvidenceStatus.Complete,
-            advisories, distinct, fix, paths, diagnostics) { RetrievedAt = _now() };
+            advisories, distinct, fix, paths, diagnostics)
+            { RetrievedAt = _now(), Deprecations = deprecations };
     }
 
     public async Task<PackageAssessment> AuditOnlyAsync(PackageNode package, PackageGraph graph,
@@ -278,8 +305,10 @@ public sealed class PackageIntelligence
                         incomplete = true;
                         continue;
                     }
-                    foreach (var item in metadata.Where(m => m.Identity.Version > parent.Version))
+                    foreach (var item in metadata.Where(m => m.IsListed && m.Identity.Version > parent.Version))
                     {
+                        if (await item.GetDeprecationMetadataAsync().WaitAsync(token) is not null)
+                            continue;
                         if (item.DependencySets is null)
                         {
                             incomplete = true;

@@ -65,6 +65,27 @@ public sealed class ToolchainCompatibilityTests
     }
 
     [Fact]
+    public void Newer_pinned_set_candidate_requires_fresh_evidence()
+    {
+        var current = Candidate("10.0.100", "10.0.102", "10.102.0");
+        var newer = Candidate("10.0.100", "10.0.105", "10.105.0");
+        foreach (var date in new[] { RetrievedAt.AddDays(-2), RetrievedAt.AddDays(1) })
+        {
+            var untrusted = newer with
+            {
+                WorkloadSetManifest = newer.WorkloadSetManifest with
+                {
+                    Evidence = newer.WorkloadSetManifest.Evidence with { RetrievedAt = date }
+                }
+            };
+            var result = WorkloadCompatibilityAnalyzer.Analyze(Request("10.0.102", [current, untrusted]));
+            Assert.Equal(Assessment.Unknown, result.Assessment);
+            Assert.Null(result.Value);
+            Assert.Contains(result.Diagnostics, d => d.Code is "evidence.expired" or "evidence.from-future");
+        }
+    }
+
+    [Fact]
     public void Selects_newest_eligible_set_only_from_effective_sdk_band()
     {
         var request = Request(

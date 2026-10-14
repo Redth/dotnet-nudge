@@ -131,3 +131,33 @@ approval fail. See `docs/integration.md` and
 feed checks remain partial without mapped source and complete audit evidence;
 restored graphs are observed without changing projects. XML project/config inventory is declared
 data only and does not represent evaluated MSBuild properties.
+
+## Package and workload recommendations
+
+Bounded mapped-source package assessments also inspect deprecation metadata for
+the exact resolved version, including unlisted versions and already-restored
+previews. `package-assess` / `nudge_package_assess` return `deprecations` with
+source, normalized reasons, publisher message and optional replacement ID/range.
+Replacement metadata is inert: it neither permits querying the replacement ID
+nor proves that replacement compatible. Deprecated and unlisted versions are
+excluded from update/security-fix and direct-parent remediation candidates.
+Deprecation is not a vulnerability or a claim that an application is affected.
+
+Scans emit independent `package-deprecation` findings alongside package updates
+or advisories, with project/TFM/RID identity and revision-bound reminder state.
+Automatic deprecation checks share the existing four mapped-direct-scope limit;
+transitive and overflow audit-only scopes do not gain deprecation coverage.
+Absent exact-version or inaccessible feed metadata is reported as incomplete,
+not as evidence that a dependency is supported.
+
+Offline workload evidence can produce `workload-set-update` for a newer eligible
+set in the effective SDK feature band while preserving an explicit pin,
+`workload-missing` for selected IDs absent from supplied installed inventory,
+and `workload-manifest-difference` for exact observed-versus-selected manifest
+identities. Missing manifest observations remain unknown, not inferred
+mismatches. Set differences apply only to workload-set install mode, not loose
+manifests. These are partial, consent-requiring review recommendations, not
+validated installation plans. They still require `.dotnet-nudge/toolchains.json`;
+no live workload discovery, advertising-manifest refresh or installation is
+performed. The scan uses current time for freshness, including the newer set's
+evidence, and withholds recommendations for stale evidence or SDK mismatch.

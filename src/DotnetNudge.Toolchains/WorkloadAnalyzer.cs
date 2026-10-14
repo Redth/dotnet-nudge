@@ -258,6 +258,9 @@ public static class WorkloadCompatibilityAnalyzer
                 .LastOrDefault();
             var selectedVersion = NuGetVersion.Parse(selected.UserFacingVersion);
             var newerVersion = newer is null ? null : NuGetVersion.Parse(newer.UserFacingVersion);
+            if (newerVersion is not null &&
+                VersionComparer.VersionRelease.Compare(newerVersion, selectedVersion) > 0)
+                evidence.Add(newer!.WorkloadSetManifest.Evidence);
             var selection = new WorkloadSelection(
                 request.SdkVersion,
                 featureBand,

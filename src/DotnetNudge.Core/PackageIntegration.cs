@@ -110,8 +110,27 @@ public static class PackageIntegration
                 var assessment = await intelligence.AssessAsync(node, graph, cancellationToken: token);
                 coverage.Add(new(feedCheck, Map(assessment.Status),
                     assessment.Diagnostics.Count == 0
-                        ? $"Checked permitted audit and candidate metadata for {node.Framework}."
+                        ? $"Checked permitted audit, deprecation and candidate metadata for {node.Framework}."
                         : string.Join("; ", assessment.Diagnostics)));
+                if (assessment.Deprecations.Count > 0)
+                {
+                    var deprecatedSubject = Subject(workspace, node);
+                    findings.Add(new(Contract.Version, "deprecation:" + deprecatedSubject,
+                        deprecatedSubject + "|deprecation",
+                        Revision(deprecatedSubject, assessment.EvidenceRevision, graph.Fingerprint),
+                        "package-deprecation",
+                        assessment.Deprecations.Any(d => d.Reasons.Contains("CriticalBugs"))
+                            ? Priority.Medium : Priority.Low,
+                        node.Version.ToNormalizedString(), null, Scope(workspace, node),
+                        Map(assessment.Status),
+                        [new Evidence("settled-assets", new Uri(graph.AssetsPath).AbsoluteUri,
+                            assessment.RetrievedAt),
+                            .. policy.Allowed(node.Id)
+                                .Where(s => assessment.Deprecations.Any(d => d.Source == s.Name))
+                                .Select(s => new Evidence("package-deprecation-source", s.Source,
+                                    assessment.RetrievedAt))],
+                        "review-package-deprecation-and-replacement-trial", true, "package"));
+                }
                 var candidate = assessment.Advisories.Count > 0
                     ? assessment.MinimalKnownFix is { } fix
                         ? assessment.Candidates.FirstOrDefault(c => c.Version == fix) : null

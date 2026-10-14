@@ -81,10 +81,13 @@ public static class ToolchainIntegration
                             "Supplied workload SDK differs from the observed effective workspace SDK."));
                     else
                     {
-                        workload = WorkloadCompatibilityAnalyzer.Analyze(bundle.Workload);
+                        var freshness = bundle.Workload.Freshness with { AsOf = DateTimeOffset.UtcNow };
+                        workload = WorkloadCompatibilityAnalyzer.Analyze(
+                            bundle.Workload with { Freshness = freshness });
                         coverage.Add(new("workload-set", Map(workload.Assessment),
                             Detail(workload.Diagnostics, "Supplied workload-set metadata analyzed offline.")));
                         if (workload.Value is { Selection: var selection } &&
+                            bundle.Workload.InstalledInventory?.Mode == WorkloadInstallMode.WorkloadSet &&
                             bundle.Workload.InstalledInventory?.WorkloadSetVersion is { } installedSet &&
                             installedSet != selection.SelectedWorkloadSetVersion)
                         {
@@ -99,12 +102,49 @@ public static class ToolchainIntegration
                                     DateTimeOffset.UtcNow)],
                                 "review-exact-workload-set-and-host-compatibility", true, "workload"));
                         }
+                        if (workload.Value is { } analysis)
+                        {
+                            var selected = analysis.Selection;
+                            var source = new Uri(Path.Combine(inventory.Root, BundlePath)).AbsoluteUri;
+                            void Add(string subject, string kind, string? current, string candidate, string action)
+                            {
+                                findings.Add(new(Contract.Version, subject, subject,
+                                    Revision(subject + raw), kind, Priority.Low, current, candidate,
+                                    new FindingScope(null, null, selected.SdkFeatureBand),
+                                    Assessment.Partial,
+                                    [new Evidence("supplied-workload-metadata", source, DateTimeOffset.UtcNow)],
+                                    action, true, "workload"));
+                            }
+                            if (selected.NewerWorkloadSetVersionInBand is { } newer)
+                                Add("workload-set-update:" + selected.SdkFeatureBand,
+                                    "workload-set-update", selected.SelectedWorkloadSetVersion, newer,
+                                    "review-pinned-workload-set-update-and-host-compatibility");
+                            if (bundle.Workload.InstalledInventory is { } installed)
+                            {
+                                foreach (var id in bundle.Workload.SelectedWorkloads
+                                    .Except(installed.Workloads, StringComparer.Ordinal).Order(StringComparer.Ordinal))
+                                    Add($"workload-missing:{selected.SdkFeatureBand}:{id}",
+                                        "workload-missing", null, id,
+                                        "review-required-workload-installation-and-host-compatibility");
+                                foreach (var manifest in selected.Manifests)
+                                    if (installed.Manifests.TryGetValue(manifest.WorkloadId, out var observedManifest) &&
+                                        ManifestVersioning.IsSupportedManifestVersion(observedManifest.Version) &&
+                                        SdkVersioning.IsCanonicalFeatureBand(observedManifest.SdkFeatureBand) &&
+                                        (observedManifest.Version != manifest.ManifestVersion ||
+                                         observedManifest.SdkFeatureBand != manifest.ManifestSdkBand))
+                                        Add($"workload-manifest:{selected.SdkFeatureBand}:{manifest.WorkloadId}",
+                                            "workload-manifest-difference",
+                                            $"{observedManifest.Version}/{observedManifest.SdkFeatureBand}",
+                                            $"{manifest.ManifestVersion}/{manifest.ManifestSdkBand}",
+                                            "review-exact-workload-manifest-and-host-compatibility");
+                            }
+                        }
                         if (workload.Value is not null && bundle.HostInventory is not null)
                         {
                             host = HostCompatibilityAnalyzer.Analyze(new(workload.Value,
                                 bundle.HostInventory, bundle.Targets ?? [],
                                 bundle.Suggestions ?? new(null, null, new Dictionary<string, string>()),
-                                bundle.Workload.Freshness, bundle.MacOsRequirementsByWorkload));
+                                freshness, bundle.MacOsRequirementsByWorkload));
                             coverage.Add(new("host-compatibility", Map(host.Assessment),
                                 Detail(host.Diagnostics, "Supplied host inventory analyzed offline; no host changes made.")));
                             if (host.Value is not null)

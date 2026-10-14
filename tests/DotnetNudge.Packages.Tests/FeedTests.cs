@@ -24,6 +24,9 @@ public sealed class FeedTests
         public bool RequireAuthentication { get; set; }
         public bool MissingVulnerabilityResource { get; set; }
         public bool IncompatibleCandidateFramework { get; set; }
+        public string? DeprecationJson { get; set; }
+        public string DeprecatedVersion { get; set; } = "1.2.0";
+        public string? UnlistedVersion { get; set; }
 
         public LocalFeed()
         {
@@ -101,7 +104,10 @@ public sealed class FeedTests
                     : version == "1.3.0"
                     ? """[{"targetFramework":"net8.0","dependencies":[{"id":"Acme.Extra","range":"[1.0.0,)"}]}]"""
                     : """[{"targetFramework":"net8.0","dependencies":[]}]""";
-                return $$"""{"@id":"{{Base}}registration/{{id}}/{{version}}.json","catalogEntry":{"id":"{{id}}","version":"{{version}}","authors":"test","description":"test","dependencyGroups":{{groups}}},"packageContent":"{{Base}}flat/{{id}}/{{version}}/{{id}}.{{version}}.nupkg"}""";
+                var deprecation = DeprecationJson is not null && version == DeprecatedVersion
+                    ? ",\"deprecation\":" + DeprecationJson : "";
+                var listed = version == UnlistedVersion ? "false" : "true";
+                return $$"""{"@id":"{{Base}}registration/{{id}}/{{version}}.json","catalogEntry":{"id":"{{id}}","version":"{{version}}","listed":{{listed}},"authors":"test","description":"test","dependencyGroups":{{groups}}{{deprecation}}},"packageContent":"{{Base}}flat/{{id}}/{{version}}/{{id}}.{{version}}.nupkg"}""";
             });
             return $$"""{"count":1,"items":[{"@id":"{{Base}}registration/{{id}}/page.json","count":{{versions.Length}},"lower":"{{versions[0]}}","upper":"{{versions[^1]}}","items":[{{string.Join(",", leaves)}}]}]}""";
         }
@@ -317,6 +323,113 @@ public sealed class FeedTests
     }
 
     [Fact]
+    public async Task DeprecationUsesExactResolvedVersionIncludingUnlistedAndDoesNotQueryReplacement()
+    {
+        using var feed = new LocalFeed
+        {
+            DeprecationJson = """
+                {"reasons":["legacy","CriticalBugs","Legacy","future-reason"],"message":"Use the maintained fork.",
+                 "alternatePackage":{"id":"Private.Replacement","range":"[3.0.0,4.0.0)"}}
+                """,
+            UnlistedVersion = "1.2.0"
+        };
+        var root = CreateMappedConfig(feed, "Acme.*");
+        try
+        {
+            var node = Node();
+            var graph = new PackageGraph("", "", [node], EvidenceStatus.Complete, null);
+            var result = await new PackageIntelligence(new PackageSourcePolicy(root)).AssessAsync(node, graph);
+            Assert.Equal(EvidenceStatus.Complete, result.Status);
+            var deprecation = Assert.Single(result.Deprecations);
+            Assert.Equal("private", deprecation.Source);
+            Assert.Equal(new[] { "CriticalBugs", "Legacy" }, deprecation.Reasons);
+            Assert.Equal("Use the maintained fork.", deprecation.Message);
+            Assert.Equal("Private.Replacement", deprecation.AlternatePackageId);
+            Assert.Equal("[3.0.0, 4.0.0)", deprecation.AlternateVersionRange);
+            Assert.DoesNotContain(feed.Requests, path => path.Contains("replacement", StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(feed.Requests, path => path.EndsWith(".nupkg", StringComparison.Ordinal));
+
+            var other = node with { Version = NuGetVersion.Parse("1.3.0") };
+            var otherResult = await new PackageIntelligence(new PackageSourcePolicy(root))
+                .AssessAsync(other, graph with { Packages = [other] });
+            Assert.Empty(otherResult.Deprecations);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task DeprecatedDirectParentIsNotSuggestedForTransitiveRemediation()
+    {
+        using var feed = new LocalFeed
+        {
+            DeprecatedVersion = "1.1.0",
+            DeprecationJson = """{"reasons":["Legacy"]}"""
+        };
+        var root = CreateMappedConfig(feed, "Acme.*");
+        try
+        {
+            var node = Node();
+            var parent = node with
+            {
+                Id = "Acme.Parent", Version = NuGetVersion.Parse("1.0.0"),
+                Direct = true, Dependencies = ["Acme.Child"]
+            };
+            var result = await new PackageIntelligence(new PackageSourcePolicy(root))
+                .AssessAsync(node, new PackageGraph("", "", [node, parent], EvidenceStatus.Complete, null));
+            Assert.Equal(NuGetVersion.Parse("1.4.0"), result.MinimalKnownFix);
+            Assert.Null(Assert.Single(result.Paths).ParentCandidate);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData("1.2.0", "future-reason", "Other")]
+    [InlineData("2.0.0-beta.1", "legacy", "Legacy")]
+    public async Task DeprecationHandlesUnknownReasonsAndAlreadyResolvedPreviews(
+        string version, string reason, string expectedReason)
+    {
+        using var feed = new LocalFeed
+        {
+            DeprecatedVersion = version,
+            DeprecationJson = $$"""{"reasons":["{{reason}}"]}"""
+        };
+        var root = CreateMappedConfig(feed, "Acme.*");
+        try
+        {
+            var node = Node() with { Version = NuGetVersion.Parse(version) };
+            var result = await new PackageIntelligence(new PackageSourcePolicy(root)).AssessAsync(node,
+                new PackageGraph("", "", [node], EvidenceStatus.Complete, null));
+            Assert.Equal(expectedReason, Assert.Single(Assert.Single(result.Deprecations).Reasons));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task DeprecatedAndUnlistedVersionsAreNotRecommendedAsSecurityFixes()
+    {
+        using var feed = new LocalFeed
+        {
+            DeprecationJson = """{"reasons":["CriticalBugs"]}""",
+            DeprecatedVersion = "1.4.0",
+            UnlistedVersion = "1.3.0",
+            BaseAdvisories = """{"acme.child":[{"url":"https://example.invalid/a","severity":2,"versions":"[1.0.0,1.3.0)"}]}""",
+            UpdateAdvisories = "{}"
+        };
+        var root = CreateMappedConfig(feed, "Acme.*");
+        try
+        {
+            var node = Node();
+            var result = await new PackageIntelligence(new PackageSourcePolicy(root)).AssessAsync(node,
+                new PackageGraph("", "", [node], EvidenceStatus.Complete, null));
+            Assert.Equal(EvidenceStatus.Complete, result.Status);
+            Assert.Empty(result.Deprecations);
+            Assert.Empty(result.Candidates);
+            Assert.Null(result.MinimalKnownFix);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
     public void Evidence_revision_covers_severity_fix_paths_and_diagnostics_independent_of_order()
     {
         var node = Node();
@@ -338,6 +451,23 @@ public sealed class FeedTests
             { Candidates = [candidate with { Diagnostic = "changed" }] }).EvidenceRevision);
         Assert.NotEqual(initial.EvidenceRevision, (initial with
             { Paths = [path with { Coverage = EvidenceStatus.Partial }] }).EvidenceRevision);
+        var deprecated = initial with
+        {
+            Deprecations = [new("private", ["Legacy", "CriticalBugs"], "message", "Acme.New", "[2.0.0,)")]
+        };
+        Assert.NotEqual(initial.EvidenceRevision, deprecated.EvidenceRevision);
+        Assert.NotEqual(deprecated.EvidenceRevision, (deprecated with
+        {
+            Deprecations = [deprecated.Deprecations[0] with { Message = "changed" }]
+        }).EvidenceRevision);
+        Assert.NotEqual(deprecated.EvidenceRevision, (deprecated with
+        {
+            Deprecations = [deprecated.Deprecations[0] with { AlternatePackageId = "Acme.Other" }]
+        }).EvidenceRevision);
+        Assert.Equal(deprecated.EvidenceRevision, (deprecated with
+        {
+            Deprecations = [deprecated.Deprecations[0] with { Reasons = ["CriticalBugs", "Legacy"] }]
+        }).EvidenceRevision);
         var second = advisory with { Url = "https://example.invalid/b" };
         Assert.Equal((initial with { Advisories = [advisory, second] }).EvidenceRevision,
             (initial with { Advisories = [second, advisory] }).EvidenceRevision);

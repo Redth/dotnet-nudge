@@ -31,6 +31,12 @@ and exact-approved worktree trials are integrated. Trials run trusted build
 code without an OS sandbox; hook/schema validation does not prove
 end-to-end model delivery.
 
+Package checks include exact-version deprecation reminders and exclude
+deprecated/unlisted upgrade candidates. Supplied offline workload evidence can
+flag missing workloads, manifest mismatches and newer same-band pinned sets.
+These are read-only recommendations, not automatic upgrades or proof of
+toolchain compatibility.
+
 For local source development, once the foundation source is present:
 
 ```sh

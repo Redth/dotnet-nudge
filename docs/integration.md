@@ -118,6 +118,22 @@ and compared with official cached release metadata separately from explicit
 container/self-contained deployment versions. No workload/SDK installer or
 platform runtime smoke is included.
 
+Package assessments include source-attributed deprecation reasons, publisher
+messages and optional replacement IDs/ranges for the exact resolved version.
+Scans surface independent `package-deprecation` reminders within the existing
+mapped-direct-package assessment budget; audit-only transitive scopes do not
+imply deprecation coverage. Replacement suggestions are untrusted metadata,
+not source-query approval or verified compatibility. Deprecated/unlisted
+versions are not upgrade or direct-parent remediation candidates.
+
+Workload recommendations distinguish a newer same-band pinned-set candidate,
+an absent selected workload, and an observed manifest mismatch. The current
+pin is not changed. Loose-manifest inventory does not imply an installed set
+comparison, and missing manifest evidence is unknown. All recommendations are
+review-only, use scan-time freshness (including newer-candidate evidence), and
+require the explicit offline bundle; they do not imply private-root workload
+installation or host compatibility has been validated.
+
 Official security-release SDK servicing is prioritized separately from generic
 same-feature-band maintenance without claiming every CVE affects this app.
 Newer major and preview SDK releases can appear as low-priority, consent-requiring

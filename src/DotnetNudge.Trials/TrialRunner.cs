@@ -234,7 +234,13 @@ public sealed class TrialRunner(TrialStore store, TrialGit? git = null, TrialSdk
                 record.Checkpoints.Add($"Deleted owned branch {ownedBranch} at {report.SourceCommit}");
                 store.Save(record);
             }
-            foreach (var sdkRoot in new[] { "sdk-baseline", "sdk-candidate", "home", "nuget", "temp" })
+            foreach (var sdkRoot in new[]
+            {
+                "sdk-baseline", "sdk-candidate",
+                "home-baseline", "home-candidate",
+                "nuget-baseline", "nuget-candidate",
+                "temp-baseline", "temp-candidate"
+            })
             {
                 store.VerifyOwnership(id, record.OwnerToken);
                 var path = TrialPaths.Child(store.Root, Path.Combine(id, sdkRoot));
@@ -255,9 +261,9 @@ public sealed class TrialRunner(TrialStore store, TrialGit? git = null, TrialSdk
         string source, string root, TrialPlan plan, TrialRecord record, List<CommandEvidence> evidence, CancellationToken token)
     {
         var sdkRoot = Path.GetDirectoryName(executable)!;
-        var home = TrialPaths.Child(root, "home");
-        var nuget = TrialPaths.Child(root, "nuget");
-        var temp = TrialPaths.Child(root, "temp");
+        var home = TrialPaths.Child(root, "home-" + stage);
+        var nuget = TrialPaths.Child(root, "nuget-" + stage);
+        var temp = TrialPaths.Child(root, "temp-" + stage);
         Directory.CreateDirectory(home);
         Directory.CreateDirectory(nuget);
         Directory.CreateDirectory(temp);

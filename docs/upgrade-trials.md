@@ -27,6 +27,37 @@ redirected/noninteractive CLI invocations cannot approve. The runner checks
 the expected persisted plan digest while holding its approval lease. Library
 callers remain responsible for their own equivalent trusted approval boundary.
 
+## SDK experiment versus framework migration
+
+An SDK version and an application's target framework are independent. `global.json`
+selects the SDK used by CLI/build commands; the project's `TargetFramework` or
+`TargetFrameworks` selects the API surface and runtime the application targets.
+
+- An **SDK-only experiment** compares an exact baseline SDK with an exact
+  candidate SDK while leaving project TFMs and package declarations unchanged.
+  The candidate worktree gets its own trial-local SDK pin; the original
+  checkout stays untouched. A newer or preview SDK may still change restore,
+  compiler, analyzer, and MSBuild behavior. Passing these checks says nothing
+  by itself about a TFM migration or deployment-runtime upgrade.
+- A **framework migration** changes the TFM (for example, `net10.0` to
+  `net11.0`) and may require package, source, CI, container, and deployment
+  edits. It is not supported by the current nudge trial runner.
+
+In the current plan contract, `SdkOnly: true` requires an empty `PackageEdits`
+list. `SdkOnly: false` allows only the declared exact `PackageEdit` entries;
+it is not permission or support for arbitrary source or TFM changes. Keep
+stable, RC, and preview SDK candidates explicit and exact in the plan. If an
+application migration is requested, use a separate, explicitly approved
+migration workflow and the matching version-to-version guidance from the
+official [`dotnet/skills` upgrade plugin](https://github.com/dotnet/skills/tree/main/plugins/dotnet-upgrade)
+(for example, [`migrate-dotnet10-to-dotnet11`](https://github.com/dotnet/skills/tree/main/plugins/dotnet-upgrade/skills/migrate-dotnet10-to-dotnet11)
+for that exact transition). Do not present the current SDK/package trial as a
+completed framework migration.
+The runner changes only the trial candidate's SDK version pin and preserves
+other `global.json` settings. If an explicit `allowPrerelease: false` prevents
+selecting the requested preview, report the trial as blocked; do not silently
+change the setting or claim the preview was tested.
+
 `TrialPlan` pins the repository's committed `HEAD` SHA, approved project scopes,
 exact SDK versions and RID, SDK-only versus explicit package edits, and a
 restore/build/test argument-vector allowlist. It carries disk, overall time and
@@ -73,7 +104,9 @@ assembly hash. This proves artifact identity, not isolation from arbitrary
 project build logic.
 Commands use the exact private `dotnet` executable with explicit cwd and
 process-local `DOTNET_ROOT`, architecture root, `PATH`, `DOTNET_CLI_HOME`,
-private NuGet roots and `NUDGE_TRIAL_ID`. An inherited environment is not
+private NuGet roots and `NUDGE_TRIAL_ID`. Baseline and candidate each have
+distinct CLI homes, NuGet caches and temporary directories; they do not share
+mutable user or package cache state. An inherited environment is not
 forwarded. `--version` must prove the selected SDK in both stages. The
 trial-only `global.json` pin is changed without rewriting comments or unrelated
 properties. Resolver `paths` and external ancestor `global.json` block.

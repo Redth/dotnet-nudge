@@ -938,6 +938,100 @@ public sealed class ProtocolTests
     }
 
     [Fact]
+    public async Task WorkloadRecommendationsRespectPinsInventoryBandsAndEvidence()
+    {
+        var root = Path.Combine(AppContext.BaseDirectory, "nudge-workload-findings-" + Guid.NewGuid().ToString("N"));
+        var evidenceFile = Path.Combine(root, ".dotnet-nudge", "toolchains.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(evidenceFile)!);
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            var evidence = new Toolchain.Evidence("fixture:workload-set", now);
+            Toolchain.WorkloadSetCandidate Set(string version, string band = "10.0.100") =>
+                new(band, version, null, new("""{"android":"35.0.50/9.0.100"}""", evidence));
+            var installed = new Toolchain.InstalledWorkloadInventory(
+                Toolchain.WorkloadInstallMode.LooseManifests, null,
+                new Dictionary<string, Toolchain.InstalledManifestInfo>
+                { ["android"] = new("35.0.49", "9.0.100") },
+                new HashSet<string>(), evidence);
+            var request = new Toolchain.WorkloadAnalysisRequest("10.0.101", "10.0.102", false,
+                [Set("10.0.102"), Set("10.0.105"), Set("10.0.106-preview.1"), Set("10.0.501", "10.0.500")],
+                new HashSet<string> { "android" },
+                new Dictionary<string, Toolchain.VersionedJsonDocument>
+                { ["android"] = new("""{"android":{}}""", evidence, "9.0.100", "35.0.50") },
+                new([], ["net10.0-android"]), installed, new(now, TimeSpan.FromDays(1)));
+            var workspace = WorkspaceDiscovery.Discover(root);
+            async Task<ToolchainScanResult> Analyze(Toolchain.WorkloadAnalysisRequest value,
+                string sdk = "10.0.101")
+            {
+                File.WriteAllText(evidenceFile, JsonSerializer.Serialize(
+                    new ToolchainEvidenceBundle(value, null, null, null, null), Contract.Json));
+                return await ToolchainIntegration.ScanAsync(workspace,
+                    new("dotnet", new Dictionary<string, string> { ["."] = sdk }, null, null, null, []),
+                    new ReleaseFixture(), CancellationToken.None);
+            }
+            var result = await Analyze(request);
+            var update = Assert.Single(result.Findings, f => f.Kind == "workload-set-update");
+            Assert.Equal("10.0.102", update.Current);
+            Assert.Equal("10.0.105", update.Candidate);
+            Assert.Equal("10.0.100", update.Scope.SdkScope);
+            Assert.Equal("android", Assert.Single(result.Findings, f => f.Kind == "workload-missing").Candidate);
+            var manifest = Assert.Single(result.Findings, f => f.Kind == "workload-manifest-difference");
+            Assert.Equal("35.0.49/9.0.100", manifest.Current);
+            Assert.Equal("35.0.50/9.0.100", manifest.Candidate);
+            Assert.DoesNotContain(result.Findings, f => f.Kind == "workload-set-difference");
+            Assert.All(result.Findings, f =>
+            {
+                Assert.True(f.RequiresConsent);
+                Assert.Equal(Assessment.Partial, f.Assessment);
+                Assert.Equal("workload", f.Category);
+            });
+            using var state = new NudgeState(Path.Combine(root, "state"));
+            state.Save(new(Contract.Version, workspace, result.Findings, result.Coverage, now));
+            Assert.Equal(3, state.Status(workspace.RepositoryId, workspace.WorktreeId, workspace.WorkspaceId).Findings.Count);
+            var correct = installed with
+            {
+                Mode = Toolchain.WorkloadInstallMode.WorkloadSet,
+                WorkloadSetVersion = "10.0.102",
+                Workloads = new HashSet<string> { "android" },
+                Manifests = new Dictionary<string, Toolchain.InstalledManifestInfo>
+                { ["android"] = new("35.0.50", "9.0.100") }
+            };
+            Assert.Empty((await Analyze(request with
+            {
+                InstalledInventory = correct, AvailableSets = [Set("10.0.102")]
+            })).Findings);
+            Assert.Single((await Analyze(request with { InstalledInventory = null })).Findings);
+            Assert.Empty((await Analyze(request, "10.0.401")).Findings);
+            Assert.Empty((await Analyze(request with { PinnedWorkloadSetVersion = "10.0.999" })).Findings);
+            Assert.Empty((await Analyze(request with
+            {
+                InstalledInventory = installed with { Evidence = evidence with { RetrievedAt = now.AddDays(-2) } }
+            })).Findings);
+            var historical = request with
+            {
+                Freshness = new(now.AddDays(-2), TimeSpan.FromDays(1)),
+                InstalledInventory = installed with { Evidence = evidence with { RetrievedAt = now.AddDays(-2) } }
+            };
+            Assert.Empty((await Analyze(historical)).Findings);
+            var staleSet = Set("10.0.105");
+            staleSet = staleSet with
+            {
+                WorkloadSetManifest = staleSet.WorkloadSetManifest with
+                { Evidence = evidence with { RetrievedAt = now.AddDays(-2) } }
+            };
+            Assert.Empty((await Analyze(request with { AvailableSets = [Set("10.0.102"), staleSet] })).Findings);
+            var unknownManifest = await Analyze(request with
+            {
+                InstalledInventory = installed with
+                { Manifests = new Dictionary<string, Toolchain.InstalledManifestInfo>() }
+            });
+            Assert.DoesNotContain(unknownManifest.Findings, f => f.Kind == "workload-manifest-difference");
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
     public async Task ScopedToolchainEvidenceKeepsLocalDeploymentAndHostFindingsDistinct()
     {
         var root = Path.Combine(AppContext.BaseDirectory, "nudge-toolchains-" + Guid.NewGuid().ToString("N"));
