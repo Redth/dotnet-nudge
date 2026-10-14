@@ -88,7 +88,7 @@ public sealed class PackageGuidanceReader
             var nuspec = files.FirstOrDefault(p => p.Key.EndsWith(".nuspec", StringComparison.OrdinalIgnoreCase));
             if (nuspec.Value is null)
                 throw new InvalidDataException("Exact package manifest is missing.");
-            using var xmlReader = XmlReader.Create(new StringReader(Decode(nuspec.Value)),
+            using var xmlReader = XmlReader.Create(new StringReader(Decode(nuspec.Value).TrimStart('\uFEFF')),
                 new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null });
             var xml = XDocument.Load(xmlReader, LoadOptions.None);
             var id = xml.Descendants().FirstOrDefault(e => e.Name.LocalName == "id")?.Value;

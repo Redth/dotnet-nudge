@@ -56,16 +56,27 @@ dotnet test tests/DotnetNudge.Packages.Tests/DotnetNudge.Packages.Tests.csproj
 - `InspectorAdapter(executable, expectedVersion).InventoryAsync(projectPath,
   assetsPath, reader)` and `.ReadProjectSkillAsync(...)` require a pinned
   installed executable, the settled assets graph and `--offline`. They parse
-  JSONL rows with their originating `InspectorSkillRow.AssetsFingerprint`,
+  JSONL records with their originating `InspectorSkillRow.AssetsFingerprint`,
+  deriving `--row` ordinals from the full, unwindowed output order when the
+  inspector omits a row field,
   select the **returned** row, use separate raw output, and reject omitted-text
   or changed-assets results before and after the selected read. The explicit
   `.ListPackageSkillsAsync(...)`/`.ReadPackageFileAsync(...)` network routes
   require caller-supplied acquisition consent and a mapped/approved source.
   Absence or version mismatch is an unknown result; use the local reader instead.
 
-**Coverage boundaries:** The installed `dotnet-inspect` tool is not required
-and is not acquired by the library; the fixture-executable tests verify its
-argument/diagnostic contract, not a live inspector binary. NuGet credentials
+**Inspector validation:** `dotnet-inspect` 0.26.0 was installed locally for
+validation, not acquired by the library. Its `--version` output includes build
+metadata (`0.26.0+d236a7a`), and its project Skills JSONL contains ordered
+entries without a `Row` field. The real-tool test exercised capability checking,
+inventory, second-row raw selection, mapped-source package paths and reference
+bytes against a restored, locally packed two-skill fixture. Captured JSONL and
+raw output are regression fixtures in the normal suite. The live test runs only
+when `DOTNET_NUDGE_INSPECTOR_QA_ROOT` points to an isolated QA root containing
+`tool/dotnet-inspect` and `fixture/{Consumer,feed,FixturePackage}`; CI runs the
+captured-output and fake-executable regressions without installing the tool.
+
+**Coverage boundaries:** NuGet credentials
 are limited to what the current noninteractive NuGet client already provides;
 authentication failures are partial assessments. Unsupported/unevaluated
 project conditions and custom central-package imports require a restore before

@@ -27,8 +27,10 @@ public sealed class InspectorAdapter
         if (!File.Exists(_executable))
             return new(EvidenceStatus.Unknown, null, "Pinned dotnet-inspect executable is absent; use local reader.");
         var check = await Invoke(["--version"], cancellationToken);
+        var compatible = NuGetVersion.TryParse(_expectedVersion, out var expected) &&
+            NuGetVersion.TryParse(check.Content?.Trim(), out var actual) && actual == expected;
         return check.Status == EvidenceStatus.Complete &&
-               check.Content?.Trim() == _expectedVersion
+               compatible
             ? check : new(EvidenceStatus.Unknown, null,
                 $"Unsupported inspector version (expected {_expectedVersion}; observed {check.Content?.Trim() ?? check.Diagnostic}).");
     }
@@ -52,8 +54,10 @@ public sealed class InspectorAdapter
                 using var json = JsonDocument.Parse(line);
                 var obj = json.RootElement;
                 if (!TryText(obj, "Package", out var id) || !TryText(obj, "Version", out var version) ||
-                    !TryText(obj, "Path", out var path) || !TryNumber(obj, "Row", out var row))
-                    throw new InvalidDataException("Inspector JSONL missing Package, Version, Path, or Row.");
+                    !TryText(obj, "Path", out var path))
+                    throw new InvalidDataException("Inspector JSONL missing Package, Version, or Path.");
+                // Unwindowed project Skills JSONL is ordered but 0.26.0 does not emit row numbers.
+                var row = TryNumber(obj, "Row", out var explicitRow) ? explicitRow : rows.Count + 1;
                 if (!path.StartsWith("skills/", StringComparison.OrdinalIgnoreCase) ||
                     !path.EndsWith("/SKILL.md", StringComparison.OrdinalIgnoreCase) ||
                     path.Contains("..") || path.Contains('\\') || rows.Any(r => r.Row == row))

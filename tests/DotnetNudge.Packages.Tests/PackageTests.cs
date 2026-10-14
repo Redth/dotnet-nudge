@@ -261,6 +261,23 @@ public sealed class PackageTests
     }
 
     [Fact]
+    public void Archive_accepts_UTF8_BOM_in_NuGet_generated_manifest()
+    {
+        using var fixture = new Fixture();
+        var node = new PackageGraphReader().Read(fixture.Assets).Packages.First();
+        var archivePath = Path.Combine(fixture.Root, "with-bom.nupkg");
+        using (var archive = ZipFile.Open(archivePath, ZipArchiveMode.Create))
+        {
+            Put(archive, "Acme.Parent.nuspec",
+                "\uFEFF<?xml version=\"1.0\" encoding=\"utf-8\"?><package><metadata><id>Acme.Parent</id><version>1.0.0</version></metadata></package>");
+            Put(archive, "skills/acme/SKILL.md", "---\nname: acme\ndescription: Inert skill.\n---\n");
+        }
+        var result = new PackageGuidanceReader().ReadArchive(archivePath, node);
+        Assert.True(result.Status == EvidenceStatus.Complete, result.Diagnostic);
+        Assert.Single(result.Skills);
+    }
+
+    [Fact]
     public void Restored_package_refuses_symlinked_skill_directories()
     {
         if (OperatingSystem.IsWindows()) return;
@@ -339,6 +356,88 @@ public sealed class PackageTests
         Assert.Equal(EvidenceStatus.Complete, listed.Status);
         Assert.Contains(File.ReadAllLines(log), c => c.Contains(
             "package Acme.Parent@1.0.0 --path skills/*/SKILL.md --paths --source https://example.invalid/v3/index.json"));
+    }
+
+    [Fact]
+    public async Task Captured_real_JSONL_without_row_numbers_selects_second_skill()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = new Fixture();
+        File.WriteAllText(fixture.Assets, File.ReadAllText(fixture.Assets)
+            .Replace("Acme.Parent", "Nudge.InspectorFixture", StringComparison.Ordinal)
+            .Replace("acme.parent", "nudge.inspectorfixture", StringComparison.Ordinal)
+            .Replace("1.0.0", "1.0.2", StringComparison.Ordinal));
+        var output = Path.Combine(AppContext.BaseDirectory, "Fixtures");
+        var tool = Path.Combine(fixture.Root, "inspect");
+        var inventoryPath = Path.Combine(output, "inspector-0.26.0-project-skills.jsonl");
+        var skillPath = Path.Combine(output, "inspector-0.26.0-second-skill.md");
+        File.WriteAllText(tool, $$"""
+            #!/bin/sh
+            if [ "$1" = "--version" ]; then
+              echo '0.26.0+d236a7a'
+            elif [ "$1" = "project" ]; then
+              case " $* " in
+                *" --jsonl "*) cat '{{inventoryPath}}' ;;
+                *" --row 2 "*) cat '{{skillPath}}' ;;
+                *) exit 2 ;;
+              esac
+            else
+              exit 2
+            fi
+            """);
+        File.SetUnixFileMode(tool, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var adapter = new InspectorAdapter(tool);
+        Assert.Equal(EvidenceStatus.Complete, (await adapter.CheckAsync()).Status);
+        var reader = new PackageGraphReader();
+        var (rows, inventory) = await adapter.InventoryAsync(fixture.Project, fixture.Assets, reader);
+        Assert.Equal(EvidenceStatus.Complete, inventory.Status);
+        Assert.Equal([1, 2], rows.Select(r => r.Row));
+        Assert.Equal("fixture-second", rows[1].Name);
+        var selected = await adapter.ReadProjectSkillAsync(fixture.Project, fixture.Assets, rows[1], reader);
+        Assert.Equal(EvidenceStatus.Complete, selected.Status);
+        Assert.Equal(File.ReadAllText(skillPath), selected.Content);
+    }
+
+    [Fact]
+    public async Task Real_pinned_inspector_roundtrips_restored_skill_and_local_package_when_configured()
+    {
+        var qaRoot = Environment.GetEnvironmentVariable("DOTNET_NUDGE_INSPECTOR_QA_ROOT");
+        if (string.IsNullOrEmpty(qaRoot)) return;
+        var executable = Path.Combine(qaRoot, "tool", "dotnet-inspect");
+        var consumer = Path.Combine(qaRoot, "fixture", "Consumer");
+        var project = Path.Combine(consumer, "Consumer.csproj");
+        var assets = Path.Combine(consumer, "obj", "project.assets.json");
+        var archive = Path.Combine(qaRoot, "fixture", "feed", "Nudge.InspectorFixture.1.0.2.nupkg");
+        var reader = new PackageGraphReader();
+        var graph = reader.Read(assets, [project]);
+        Assert.Equal(EvidenceStatus.Complete, graph.Status);
+        var node = Assert.Single(graph.Packages);
+        Assert.Equal("Nudge.InspectorFixture", node.Id);
+        var adapter = new InspectorAdapter(executable);
+        Assert.Equal(EvidenceStatus.Complete, (await adapter.CheckAsync()).Status);
+        var (rows, inventory) = await adapter.InventoryAsync(project, assets, reader);
+        Assert.Equal(EvidenceStatus.Complete, inventory.Status);
+        Assert.Equal([1, 2], rows.Select(r => r.Row));
+        Assert.Equal("fixture-second", rows[1].Name);
+        var skill = await adapter.ReadProjectSkillAsync(project, assets, rows[1], reader);
+        Assert.Equal(EvidenceStatus.Complete, skill.Status);
+        Assert.Equal(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures",
+            "inspector-0.26.0-second-skill.md")), skill.Content);
+        var policy = new PackageSourcePolicy(consumer);
+        var paths = await adapter.ListPackageSkillsAsync(node.Id, node.Version.ToString(), "fixture",
+            policy, acquisitionApproved: true);
+        Assert.Equal(EvidenceStatus.Complete, paths.Status);
+        Assert.Equal(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures",
+            "inspector-0.26.0-package-paths.txt")), paths.Content);
+        var reference = await adapter.ReadPackageFileAsync(node.Id, node.Version.ToString(),
+            "skills/fixture-migration/references/steps.md", "fixture", policy, acquisitionApproved: true);
+        Assert.Equal(EvidenceStatus.Complete, reference.Status);
+        Assert.Equal(File.ReadAllText(Path.Combine(qaRoot, "fixture", "FixturePackage", "skills",
+            "fixture-migration", "references", "steps.md")), reference.Content);
+        var local = new PackageGuidanceReader().ReadArchive(archive, node);
+        Assert.True(local.Status == EvidenceStatus.Complete, local.Diagnostic);
+        Assert.Equal(2, local.Skills.Count);
+        Assert.Single(local.Skills.Single(s => s.Name == "fixture-migration").References);
     }
 
     private static void Put(ZipArchive archive, string path, string text)
