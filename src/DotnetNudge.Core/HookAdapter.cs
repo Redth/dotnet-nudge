@@ -23,16 +23,17 @@ public static class HookAdapter
         var path = String("cwd") ?? String("workspace") ?? String("workspaceRoot");
         if (path is null || !Directory.Exists(path)) return "{}";
         var (repository, worktree) = WorkspaceDiscovery.Identities(path);
-        var owner = host + ":" + (String("session_id") ?? String("sessionId") ?? worktree);
+        var workspace = WorkspaceDiscovery.ScopeId(path);
+        var owner = host + ":" + (String("session_id") ?? String("sessionId") ?? workspace);
         if (eventName == "session-end")
         {
             state.Release(owner);
             return "{}";
         }
         if (eventName == "session-start" || eventName == "prompt-submit")
-            state.QueueScan(worktree);
+            state.QueueScan(workspace);
         if (host == "copilot" && eventName == "prompt-submit") return "{}";
-        var status = state.Status(repository, worktree);
+        var status = state.Status(repository, worktree, workspace);
         var finding = status.Findings.Where(f => f.Eligible &&
             f.Finding.Assessment is Assessment.Confirmed or Assessment.Partial)
             .OrderBy(f => f.Finding.Priority).Select(f => f.Finding)

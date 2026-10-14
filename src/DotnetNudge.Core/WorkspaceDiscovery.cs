@@ -10,7 +10,7 @@ public static class WorkspaceDiscovery
 {
     static readonly HashSet<string> Excluded = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".git", ".vs", ".idea", "node_modules", "bin", "obj", "packages", "vendor", "artifacts"
+        ".git", ".vs", ".idea", "node_modules", "bin", "obj", "packages", "vendor", "artifacts", ".artifacts"
     };
     static readonly HashSet<string> ProjectExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -34,6 +34,27 @@ public static class WorkspaceDiscovery
     static string Id(string path) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
             OperatingSystem.IsWindows() ? path.ToUpperInvariant() : path))).ToLowerInvariant();
+
+    public static string ScopeId(string root) => Id(Canonical(root));
+
+    public static string SdkScopeKey(string root, string scope)
+    {
+        var full = Canonical(Path.Combine(root, scope));
+        var cursor = Canonical(root);
+        while (true)
+        {
+            if (Directory.Exists(Path.Combine(cursor, ".git")) ||
+                File.Exists(Path.Combine(cursor, ".git")))
+            {
+                var relative = Path.GetRelativePath(cursor, full).Replace('\\', '/');
+                return relative == ".." || relative.StartsWith("../", StringComparison.Ordinal)
+                    ? full : relative;
+            }
+            var parent = Directory.GetParent(cursor)?.FullName;
+            if (parent is null) return full;
+            cursor = parent;
+        }
+    }
 
     public static (string Repository, string Worktree) Identities(string root)
     {
@@ -175,7 +196,7 @@ public static class WorkspaceDiscovery
             "Existing assets and evaluated package graphs are not checked by this foundation scan."));
         coverage.Add(new("effective-sdk", Assessment.Unknown,
             "Declared global.json settings are not an observed SDK selection."));
-        return new(Contract.Version, repository, worktree, root, projects, projectDeclarations, solutions,
+        return new(Contract.Version, repository, worktree, ScopeId(root), root, projects, projectDeclarations, solutions,
             configurations, relevantDeclarations, coverage);
     }
 
@@ -184,7 +205,11 @@ public static class WorkspaceDiscovery
         if (new FileInfo(file).Length > 1024 * 1024)
             throw new InvalidDataException($"global.json exceeds 1 MiB: {file}");
         var raw = File.ReadAllText(file);
-        using var json = JsonDocument.Parse(raw);
+        using var json = JsonDocument.Parse(raw, new JsonDocumentOptions
+        {
+            CommentHandling = JsonCommentHandling.Skip,
+            AllowTrailingCommas = true
+        });
         var sdk = json.RootElement.TryGetProperty("sdk", out var value) ? value : default;
         string? Text(string key) => sdk.ValueKind == JsonValueKind.Object &&
             sdk.TryGetProperty(key, out var field) && field.ValueKind == JsonValueKind.String

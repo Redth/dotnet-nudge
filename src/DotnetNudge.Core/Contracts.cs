@@ -29,7 +29,7 @@ public sealed record SdkDeclaration(string Scope, string? Version, string? RollF
 public sealed record ProjectDeclaration(string Path, string? Sdk,
     IReadOnlyList<string> TargetFrameworkExpressions);
 public sealed record WorkspaceInventory(
-    int SchemaVersion, string RepositoryId, string WorktreeId, string Root,
+    int SchemaVersion, string RepositoryId, string WorktreeId, string WorkspaceId, string Root,
     IReadOnlyList<string> Projects, IReadOnlyList<ProjectDeclaration> ProjectDeclarations,
     IReadOnlyList<string> Solutions,
     IReadOnlyList<string> ConfigurationFiles, IReadOnlyList<SdkDeclaration> SdkDeclarations,
@@ -37,10 +37,10 @@ public sealed record WorkspaceInventory(
 public sealed record ScanReport(int SchemaVersion, WorkspaceInventory Workspace,
     IReadOnlyList<Finding> Findings, IReadOnlyList<Coverage> Coverage, DateTimeOffset ScannedAt);
 public sealed record FindingStatus(Finding Finding, bool Eligible, string? Suppression);
-public sealed record StatusReport(int SchemaVersion, string RepositoryId, string WorktreeId,
+public sealed record StatusReport(int SchemaVersion, string RepositoryId, string WorktreeId, string WorkspaceId,
     DateTimeOffset? ScannedAt, IReadOnlyList<FindingStatus> Findings, IReadOnlyList<Coverage> Coverage);
 public sealed record DecisionResult(int SchemaVersion, string FindingId, string Revision,
     DecisionAction Action, DateTimeOffset RecordedAt, DateTimeOffset? Until);
 public sealed record DoctorReport(int SchemaVersion, string StateDirectory, string? Workspace,
-    string? RepositoryId, string? WorktreeId, string ReleaseMetadataSource,
+    string? RepositoryId, string? WorktreeId, string? WorkspaceId, string ReleaseMetadataSource,
     string Note);

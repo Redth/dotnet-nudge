@@ -5,6 +5,7 @@ namespace DotnetNudge.Core;
 
 public sealed class NudgeState : IDisposable
 {
+    const int StateSchemaVersion = 2;
     readonly SqliteConnection connection;
     readonly TimeProvider clock;
 
@@ -30,21 +31,28 @@ public sealed class NudgeState : IDisposable
             command.CommandText = """
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
-            INSERT INTO schema_version SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM schema_version);
+            INSERT INTO schema_version SELECT 2 WHERE NOT EXISTS (SELECT 1 FROM schema_version);
             """;
             command.ExecuteNonQuery();
             command.CommandText = "SELECT version FROM schema_version";
-            if (Convert.ToInt32(command.ExecuteScalar()) != Contract.Version)
+            var version = Convert.ToInt32(command.ExecuteScalar());
+            if (version is not (1 or StateSchemaVersion))
                 throw new InvalidDataException("Unsupported dotnet-nudge state schema; preserve the database and use a compatible version.");
             command.CommandText = """
-            CREATE TABLE IF NOT EXISTS snapshots (
-              worktree TEXT PRIMARY KEY, repository TEXT NOT NULL, report TEXT NOT NULL, scanned INTEGER NOT NULL
+            CREATE TABLE IF NOT EXISTS workspace_snapshots (
+              workspace TEXT PRIMARY KEY, worktree TEXT NOT NULL, repository TEXT NOT NULL,
+              report TEXT NOT NULL, scanned INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS decisions (
               repository TEXT NOT NULL, subject TEXT NOT NULL, category TEXT NOT NULL,
               action TEXT NOT NULL, candidate TEXT, revision TEXT, until_time INTEGER,
               recorded INTEGER NOT NULL,
               PRIMARY KEY(repository, subject, category, action)
+            );
+            CREATE TABLE IF NOT EXISTS version_skips (
+              repository TEXT NOT NULL, subject TEXT NOT NULL, category TEXT NOT NULL,
+              candidate TEXT NOT NULL, revision TEXT NOT NULL, recorded INTEGER NOT NULL,
+              PRIMARY KEY(repository, subject, category, candidate, revision)
             );
             CREATE TABLE IF NOT EXISTS deliveries (
               repository TEXT NOT NULL, subject TEXT NOT NULL, revision TEXT NOT NULL,
@@ -54,10 +62,19 @@ public sealed class NudgeState : IDisposable
             CREATE TABLE IF NOT EXISTS metadata (
               source TEXT PRIMARY KEY, body TEXT NOT NULL, etag TEXT, refreshed INTEGER NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS scan_jobs (
-              worktree TEXT PRIMARY KEY, requested INTEGER NOT NULL, status TEXT NOT NULL
+            CREATE TABLE IF NOT EXISTS workspace_scan_jobs (
+              workspace TEXT PRIMARY KEY, requested INTEGER NOT NULL, status TEXT NOT NULL
             );
             """;
+            command.ExecuteNonQuery();
+            if (version == 1) MigrateV1();
+            command.CommandText = """
+                INSERT OR IGNORE INTO version_skips(repository,subject,category,candidate,revision,recorded)
+                SELECT repository,subject,category,candidate,revision,recorded FROM decisions
+                WHERE action='skip-version' AND candidate IS NOT NULL AND revision IS NOT NULL;
+                DELETE FROM decisions WHERE action='skip-version'
+                AND candidate IS NOT NULL AND revision IS NOT NULL;
+                """;
             command.ExecuteNonQuery();
         }
         catch
@@ -67,48 +84,97 @@ public sealed class NudgeState : IDisposable
         }
     }
 
+    void MigrateV1()
+    {
+        using var transaction = connection.BeginTransaction();
+        using var read = connection.CreateCommand();
+        read.Transaction = transaction;
+        read.CommandText = "SELECT report, scanned FROM snapshots";
+        using (var rows = read.ExecuteReader())
+        {
+            while (rows.Read())
+            {
+                var report = JsonSerializer.Deserialize<ScanReport>(rows.GetString(0), Contract.Json)
+                    ?? throw new InvalidDataException("Cannot migrate a null scan report.");
+                var workspace = report.Workspace with
+                {
+                    WorkspaceId = WorkspaceDiscovery.ScopeId(report.Workspace.Root)
+                };
+                using var insert = connection.CreateCommand();
+                insert.Transaction = transaction;
+                insert.CommandText = """
+                    INSERT INTO workspace_snapshots(workspace,worktree,repository,report,scanned)
+                    VALUES($s,$w,$r,$body,$time)
+                    """;
+                insert.Parameters.AddWithValue("$s", workspace.WorkspaceId);
+                insert.Parameters.AddWithValue("$w", workspace.WorktreeId);
+                insert.Parameters.AddWithValue("$r", workspace.RepositoryId);
+                insert.Parameters.AddWithValue("$body", JsonSerializer.Serialize(
+                    report with { Workspace = workspace }, Contract.Json));
+                insert.Parameters.AddWithValue("$time", rows.GetInt64(1));
+                insert.ExecuteNonQuery();
+            }
+        }
+        using var jobs = connection.CreateCommand();
+        jobs.Transaction = transaction;
+        jobs.CommandText = """
+            INSERT INTO workspace_scan_jobs(workspace,requested,status)
+            SELECT COALESCE(s.workspace,j.worktree),j.requested,j.status FROM scan_jobs j
+            LEFT JOIN workspace_snapshots s ON s.worktree=j.worktree
+            """;
+        jobs.ExecuteNonQuery();
+        jobs.CommandText = "UPDATE schema_version SET version=$version";
+        jobs.Parameters.AddWithValue("$version", StateSchemaVersion);
+        jobs.ExecuteNonQuery();
+        transaction.Commit();
+    }
+
     public void Save(ScanReport report)
     {
         using var transaction = connection.BeginTransaction();
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            INSERT INTO snapshots(worktree, repository, report, scanned) VALUES ($w,$r,$body,$time)
-            ON CONFLICT(worktree) DO UPDATE SET repository=$r, report=$body, scanned=$time
+            INSERT INTO workspace_snapshots(workspace,worktree,repository,report,scanned)
+            VALUES ($s,$w,$r,$body,$time)
+            ON CONFLICT(workspace) DO UPDATE SET worktree=$w,repository=$r,report=$body,scanned=$time
             """;
+        command.Parameters.AddWithValue("$s", report.Workspace.WorkspaceId);
         command.Parameters.AddWithValue("$w", report.Workspace.WorktreeId);
         command.Parameters.AddWithValue("$r", report.Workspace.RepositoryId);
         command.Parameters.AddWithValue("$body", JsonSerializer.Serialize(report, Contract.Json));
         command.Parameters.AddWithValue("$time", report.ScannedAt.ToUnixTimeSeconds());
         command.ExecuteNonQuery();
-        command.CommandText = "DELETE FROM scan_jobs WHERE worktree=$w";
+        command.CommandText = "DELETE FROM workspace_scan_jobs WHERE workspace=$s";
         command.ExecuteNonQuery();
         transaction.Commit();
     }
 
-    public ScanReport? Latest(string worktree)
+    public ScanReport? Latest(string workspace)
     {
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT report FROM snapshots WHERE worktree=$w";
-        command.Parameters.AddWithValue("$w", worktree);
+        command.CommandText = "SELECT report FROM workspace_snapshots WHERE workspace=$s";
+        command.Parameters.AddWithValue("$s", workspace);
         return command.ExecuteScalar() is string json
             ? JsonSerializer.Deserialize<ScanReport>(json, Contract.Json) : null;
     }
 
-    public StatusReport Status(string repository, string worktree)
+    public StatusReport Status(string repository, string worktree, string workspace)
     {
-        var report = Latest(worktree);
-        if (report is null)
-            return new(Contract.Version, repository, worktree, null, [],
-                [new("scan", Assessment.Unknown, "No scan recorded; run scan to establish coverage.")]);
+        var report = Latest(workspace);
         using var job = connection.CreateCommand();
-        job.CommandText = "SELECT status FROM scan_jobs WHERE worktree=$w";
-        job.Parameters.AddWithValue("$w", worktree);
+        job.CommandText = "SELECT status FROM workspace_scan_jobs WHERE workspace=$s";
+        job.Parameters.AddWithValue("$s", workspace);
         var pending = job.ExecuteScalar() is string status
             ? new Coverage("scan-job", Assessment.Partial,
                 $"A {status} scan is queued; no background worker is available in this foundation.")
             : null;
-        return new(Contract.Version, repository, worktree, report.ScannedAt,
+        if (report is null)
+            return new(Contract.Version, repository, worktree, workspace, null, [],
+                pending is null
+                    ? [new("scan", Assessment.Unknown, "No scan recorded; run scan to establish coverage.")]
+                    : [new("scan", Assessment.Unknown, "No scan recorded; run scan to establish coverage."), pending]);
+        return new(Contract.Version, repository, worktree, workspace, report.ScannedAt,
             report.Findings.Select(f =>
             {
                 var reason = Suppression(repository, f) ?? DeliverySuppression(repository, f);
@@ -122,11 +188,13 @@ public sealed class NudgeState : IDisposable
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT subject,revision,lease_until,delivered FROM deliveries
-            WHERE repository=$r AND (subject=$s OR delivered>$day)
+            WHERE repository=$r AND (subject=$s OR delivered>$day OR
+              (delivered IS NULL AND lease_until>$now))
             """;
         command.Parameters.AddWithValue("$r", repository);
         command.Parameters.AddWithValue("$s", finding.SubjectKey);
         command.Parameters.AddWithValue("$day", now - 86400);
+        command.Parameters.AddWithValue("$now", now);
         var sameSubject = false;
         var repositoryCooldown = false;
         using var reader = command.ExecuteReader();
@@ -141,9 +209,11 @@ public sealed class NudgeState : IDisposable
                 if (delivered > now - 7 * 86400) return "delivered-recently";
                 if (delivered is null && leaseUntil > now) return "delivery-leased";
             }
-            if (subject == finding.SubjectKey && delivered > now - 7 * 86400)
+            if (subject == finding.SubjectKey &&
+                (delivered > now - 7 * 86400 || (delivered is null && leaseUntil > now)))
                 sameSubject = true;
-            if (delivered > now - 86400) repositoryCooldown = true;
+            if (delivered > now - 86400 || (delivered is null && leaseUntil > now))
+                repositoryCooldown = true;
         }
         if (finding.Priority is Priority.Medium or Priority.Low)
             return sameSubject ? "subject-cooldown" : repositoryCooldown ? "repository-cooldown" : null;
@@ -156,6 +226,9 @@ public sealed class NudgeState : IDisposable
         command.CommandText = """
             SELECT subject, action, candidate, revision, until_time FROM decisions
             WHERE repository=$r AND (subject=$s OR (subject='*' AND category=$c))
+            UNION ALL
+            SELECT subject, 'skip-version', candidate, revision, NULL FROM version_skips
+            WHERE repository=$r AND subject=$s AND category=$c
             """;
         command.Parameters.AddWithValue("$r", repository);
         command.Parameters.AddWithValue("$s", finding.SubjectKey);
@@ -180,14 +253,14 @@ public sealed class NudgeState : IDisposable
             skipped ? "version-skipped" : null;
     }
 
-    public DecisionResult Decide(string repository, string worktree, string findingId,
+    public DecisionResult Decide(string repository, string workspace, string findingId,
         string revision, DecisionAction action, DateTimeOffset? until)
     {
         using var transaction = connection.BeginTransaction();
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "SELECT report FROM snapshots WHERE worktree=$w AND repository=$r";
-        command.Parameters.AddWithValue("$w", worktree);
+        command.CommandText = "SELECT report FROM workspace_snapshots WHERE workspace=$workspace AND repository=$r";
+        command.Parameters.AddWithValue("$workspace", workspace);
         command.Parameters.AddWithValue("$r", repository);
         var report = command.ExecuteScalar() is string json
             ? JsonSerializer.Deserialize<ScanReport>(json, Contract.Json) : null;
@@ -198,6 +271,8 @@ public sealed class NudgeState : IDisposable
             throw new ArgumentException("Snooze requires a future --until timestamp.");
         if (action != DecisionAction.Snooze && until is not null)
             throw new ArgumentException("--until is only valid for snooze.");
+        if (action == DecisionAction.SkipVersion && finding.Candidate is null)
+            throw new ArgumentException("Cannot skip a finding without a candidate version.");
         var name = action switch
         {
             DecisionAction.Snooze => "snooze",
@@ -215,6 +290,18 @@ public sealed class NudgeState : IDisposable
                 DELETE FROM decisions WHERE repository=$r AND subject=$s AND category=$c
                 AND action='disable-category'
                 """;
+        }
+        else if (action == DecisionAction.SkipVersion)
+        {
+            command.CommandText = """
+                INSERT INTO version_skips(repository,subject,category,candidate,revision,recorded)
+                VALUES($r,$s,$c,$candidate,$revision,$now)
+                ON CONFLICT(repository,subject,category,candidate,revision)
+                DO UPDATE SET recorded=$now
+                """;
+            command.Parameters.AddWithValue("$candidate", finding.Candidate!);
+            command.Parameters.AddWithValue("$revision", finding.Revision);
+            command.Parameters.AddWithValue("$now", clock.GetUtcNow().ToUnixTimeSeconds());
         }
         else
         {
@@ -246,14 +333,19 @@ public sealed class NudgeState : IDisposable
         if (finding.Priority is Priority.Medium or Priority.Low)
         {
             command.CommandText = """
-                SELECT COUNT(*) FROM deliveries WHERE repository=$r AND delivered IS NOT NULL
-                AND (owner=$owner OR delivered>$day OR (subject=$s AND delivered>$week))
+                SELECT COUNT(*) FROM deliveries WHERE repository=$r
+                AND (
+                  (delivered IS NOT NULL AND
+                    (owner=$owner OR delivered>$day OR (subject=$s AND delivered>$week)))
+                  OR (delivered IS NULL AND lease_until>$now)
+                )
                 """;
             command.Parameters.AddWithValue("$r", repository);
             command.Parameters.AddWithValue("$owner", owner);
             command.Parameters.AddWithValue("$s", finding.SubjectKey);
             command.Parameters.AddWithValue("$day", now - 86400);
             command.Parameters.AddWithValue("$week", now - 7 * 86400);
+            command.Parameters.AddWithValue("$now", now);
             if (Convert.ToInt64(command.ExecuteScalar()) > 0) return false;
             command.Parameters.Clear();
         }
@@ -300,14 +392,14 @@ public sealed class NudgeState : IDisposable
         command.ExecuteNonQuery();
     }
 
-    public void QueueScan(string worktree)
+    public void QueueScan(string workspace)
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO scan_jobs(worktree,requested,status) VALUES($w,$now,'pending')
-            ON CONFLICT(worktree) DO UPDATE SET requested=$now,status='pending'
+            INSERT INTO workspace_scan_jobs(workspace,requested,status) VALUES($s,$now,'pending')
+            ON CONFLICT(workspace) DO UPDATE SET requested=$now,status='pending'
             """;
-        command.Parameters.AddWithValue("$w", worktree);
+        command.Parameters.AddWithValue("$s", workspace);
         command.Parameters.AddWithValue("$now", clock.GetUtcNow().ToUnixTimeSeconds());
         command.ExecuteNonQuery();
     }

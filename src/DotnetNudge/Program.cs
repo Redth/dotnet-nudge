@@ -61,6 +61,7 @@ static async Task<int> Run(string[] args)
                 : WorkspaceDiscovery.Identities(root);
             Console.WriteLine(JsonSerializer.Serialize(new DoctorReport(Contract.Version,
                 Path.GetFullPath(stateDir), root, identity?.Repository, identity?.Worktree,
+                root is null ? null : WorkspaceDiscovery.ScopeId(root),
                 Environment.GetEnvironmentVariable("NUDGE_RELEASES_DIR") is null
                     ? ReleaseMetadata.IndexUrl : "local fixture",
                 "SDK selection, NuGet graphs, MCP worker and trials are not implemented in this foundation."),
@@ -77,6 +78,7 @@ static async Task<int> Run(string[] args)
         }
         var workspace = WorkspaceDiscovery.Canonical(Required("--workspace"));
         var (repository, worktree) = WorkspaceDiscovery.Identities(workspace);
+        var workspaceId = WorkspaceDiscovery.ScopeId(workspace);
         object result;
         switch (args[0])
         {
@@ -90,7 +92,7 @@ static async Task<int> Run(string[] args)
                 }
                 break;
             case "status":
-                result = state.Status(repository, worktree);
+                result = state.Status(repository, worktree, workspaceId);
                 break;
             case "decision":
                 if (!Enum.TryParse<DecisionAction>(Required("--action").Replace("-", ""), true, out var action))
@@ -105,7 +107,7 @@ static async Task<int> Run(string[] args)
                         throw new ArgumentException("--until requires an RFC3339 timestamp with a timezone.");
                     until = timestamp;
                 }
-                result = state.Decide(repository, worktree, Required("--finding"),
+                result = state.Decide(repository, workspaceId, Required("--finding"),
                     Required("--revision"), action, until);
                 break;
             default: throw new ArgumentException($"Unknown command {args[0]}.");

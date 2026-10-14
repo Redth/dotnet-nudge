@@ -15,7 +15,8 @@ Replace `osx-arm64` with your machine's runtime identifier. The executable is
 Microsoft.Data.Sqlite and NuGet.Versioning. Data is stored in
 `<OS application data>/dotnet-nudge/state.sqlite`, overridden by
 `NUDGE_STATE_DIR` or `--state-dir PATH`. Do not place personal decisions in Git.
-An unsupported SQLite schema version raises an error without deleting state.
+SQLite state schema v2 migrates v1 snapshots, queued scans, and version skips in
+place. An unsupported schema version raises an error without deleting state.
 
 ## CLI and versioned JSON
 
@@ -41,8 +42,13 @@ absent from the current worktree snapshot or an outdated revision. Snooze
 requires a future `--until`, skip-version binds the exact candidate and
 revision, and disable/enable-category affects all findings in that category
 for the repository. Git identities hash the canonical Git common directory
-for decisions and the worktree root for snapshots. Non-Git folders hash their
-canonical path. Source fixture tests can set `NUDGE_RELEASES_DIR` to a directory
+for decisions and the worktree root for worktree identity; snapshots and jobs
+use a separate `workspaceId` hash of the exact admitted root. Scanning a Git
+subdirectory never widens its scope or overwrites a sibling's snapshot.
+SDK finding subjects use the Git-root-relative global.json path so distinct
+pins within one worktree do not collide, while a pin keeps its identity across
+worktrees. Non-Git folders hash their canonical path. Source fixture tests can
+set `NUDGE_RELEASES_DIR` to a directory
 containing `releases-index.json` and `<channel>/releases.json`.
 Routine delivery is lease-atomic across sessions: one per session, no more
 than one per repository per 24 hours, seven days between questions on the
@@ -62,16 +68,16 @@ Coverage(Check, Assessment, Detail)
 SdkDeclaration(Scope, Version?, RollForward?, AllowPrerelease?,
                Paths[], WorkloadVersion?, RawJson)
 ProjectDeclaration(Path, Sdk?, TargetFrameworkExpressions[])
-WorkspaceInventory(SchemaVersion, RepositoryId, WorktreeId, Root,
+WorkspaceInventory(SchemaVersion, RepositoryId, WorktreeId, WorkspaceId, Root,
                    Projects[], ProjectDeclarations[], Solutions[], ConfigurationFiles[],
                    SdkDeclarations[], Coverage[])
 ScanReport(SchemaVersion, Workspace, Findings[], Coverage[], ScannedAt)
 FindingStatus(Finding, Eligible, Suppression?)
-StatusReport(SchemaVersion, RepositoryId, WorktreeId, ScannedAt?,
+StatusReport(SchemaVersion, RepositoryId, WorktreeId, WorkspaceId, ScannedAt?,
              Findings[], Coverage[])
 DecisionResult(SchemaVersion, FindingId, Revision, Action, RecordedAt, Until?)
 DoctorReport(SchemaVersion, StateDirectory, Workspace?, RepositoryId?,
-             WorktreeId?, ReleaseMetadataSource, Note)
+             WorktreeId?, WorkspaceId?, ReleaseMetadataSource, Note)
 ```
 
 `Assessment` is confirmed, unknown, partial, stale, or blocked. SDK candidate

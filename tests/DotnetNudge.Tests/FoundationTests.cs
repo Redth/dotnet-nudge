@@ -70,6 +70,7 @@ public sealed class FoundationTests
         fixture.File("nested/N.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\" />");
         fixture.File("bin/Noise.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\" />");
         fixture.File("node_modules/Noise.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+        fixture.File(".artifacts/Noise.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\" />");
         fixture.File("a.slnx", "<Solution />");
         fixture.File("nested/global.json", """
             {"sdk":{"version":"10.0.101","rollForward":"disable",
@@ -102,6 +103,27 @@ public sealed class FoundationTests
         Assert.Equal(2, declarations.Count);
         Assert.Contains(declarations, d => d.Scope == "global.json" && d.Version == "10.0.101");
         Assert.Contains(declarations, d => d.Scope == "nested/global.json" && d.Version == "10.0.401");
+    }
+
+    [Fact]
+    public async Task CommentedGlobalJsonRemainsAServiceableDeclaration()
+    {
+        using var fixture = new Fixture();
+        fixture.File("global.json", """
+            {
+              // SDK pins support JSON comments.
+              "sdk": {
+                /* keep the current band */
+                "version": "10.0.101",
+                "allowPrerelease": false,
+              },
+            }
+            """);
+        var workspace = WorkspaceDiscovery.Discover(fixture.Root);
+        Assert.Equal("10.0.101", Assert.Single(workspace.SdkDeclarations).Version);
+        var (findings, coverage) = await SdkServicing.CheckAsync(workspace, new Releases(Index, Channel));
+        Assert.Equal("10.0.113", Assert.Single(findings).Candidate);
+        Assert.DoesNotContain(coverage, c => c.Assessment == Assessment.Blocked);
     }
 
     [Fact]
@@ -148,12 +170,58 @@ public sealed class FoundationTests
         var other = WorkspaceDiscovery.Discover(right);
         using var state = fixture.State();
         state.Save(new(1, first, [Finding()], [], DateTimeOffset.UtcNow));
-        Assert.Null(state.Status(other.RepositoryId, other.WorktreeId).ScannedAt);
+        Assert.Null(state.Status(other.RepositoryId, other.WorktreeId, other.WorkspaceId).ScannedAt);
         state.Save(new(1, other, [Finding()], [], DateTimeOffset.UtcNow));
-        state.Decide(first.RepositoryId, first.WorktreeId, "sdk:root", "r1",
+        state.Decide(first.RepositoryId, first.WorkspaceId, "sdk:root", "r1",
             DecisionAction.DisableCategory, null);
         Assert.Equal("category-disabled", Assert.Single(
-            state.Status(other.RepositoryId, other.WorktreeId).Findings).Suppression);
+            state.Status(other.RepositoryId, other.WorktreeId, other.WorkspaceId).Findings).Suppression);
+    }
+
+    [Fact]
+    public async Task AdmittedSubfoldersKeepIndependentSnapshotsJobsHooksAndSdkSubjects()
+    {
+        using var fixture = new Fixture();
+        Directory.CreateDirectory(Path.Combine(fixture.Root, ".git"));
+        fixture.File("A/A.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+        fixture.File("A/global.json", """{"sdk":{"version":"10.0.101"}}""");
+        fixture.File("B/B.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+        fixture.File("B/global.json", """{"sdk":{"version":"10.0.102"}}""");
+        var a = Path.Combine(fixture.Root, "A");
+        var b = Path.Combine(fixture.Root, "B");
+        var clock = new Clock();
+        using var state = fixture.State(clock);
+        var scanner = new NudgeScanner(new Releases(Index, Channel), clock);
+        var left = await scanner.ScanAsync(a);
+        var right = await scanner.ScanAsync(b);
+        Assert.Equal(left.Workspace.RepositoryId, right.Workspace.RepositoryId);
+        Assert.Equal(left.Workspace.WorktreeId, right.Workspace.WorktreeId);
+        Assert.NotEqual(left.Workspace.WorkspaceId, right.Workspace.WorkspaceId);
+        var aFinding = Assert.Single(left.Findings);
+        var bFinding = Assert.Single(right.Findings);
+        Assert.NotEqual(aFinding.SubjectKey, bFinding.SubjectKey);
+        Assert.Contains("A/global.json", aFinding.SubjectKey);
+        Assert.Contains("B/global.json", bFinding.SubjectKey);
+        state.QueueScan(left.Workspace.WorkspaceId);
+        state.QueueScan(right.Workspace.WorkspaceId);
+        state.Save(left);
+        var pending = state.Status(right.Workspace.RepositoryId, right.Workspace.WorktreeId,
+            right.Workspace.WorkspaceId);
+        Assert.Null(pending.ScannedAt);
+        Assert.Contains(pending.Coverage, c => c.Check == "scan-job");
+        state.Save(right);
+        Assert.Equal("10.0.101", state.Latest(left.Workspace.WorkspaceId)!.Findings.Single().Current);
+        Assert.Equal("10.0.102", state.Latest(right.Workspace.WorkspaceId)!.Findings.Single().Current);
+        var aPayload = JsonSerializer.Serialize(new { cwd = a, session_id = "a" });
+        var bPayload = JsonSerializer.Serialize(new { cwd = b, session_id = "b" });
+        Assert.Contains(aFinding.Id, HookAdapter.Handle("copilot", "session-start", aPayload, state));
+        Assert.Equal("{}", HookAdapter.Handle("claude", "session-start", bPayload, state));
+        clock.Now = clock.Now.AddDays(8);
+        Assert.Contains(bFinding.Id, HookAdapter.Handle("claude", "session-start", bPayload, state));
+        state.Decide(left.Workspace.RepositoryId, left.Workspace.WorkspaceId,
+            aFinding.Id, aFinding.Revision, DecisionAction.SkipVersion, null);
+        Assert.Equal("version-skipped", state.Suppression(left.Workspace.RepositoryId, aFinding));
+        Assert.Null(state.Suppression(right.Workspace.RepositoryId, bFinding));
     }
 
     [Fact]
@@ -188,6 +256,24 @@ public sealed class FoundationTests
             WorkspaceDiscovery.Discover(fixture.Root), source);
         Assert.Empty(findings);
         Assert.Contains(coverage, c => c.Assessment == Assessment.Blocked);
+    }
+
+    [Theory]
+    [InlineData("{}", Channel)]
+    [InlineData("""{"releases-index":{}}""", Channel)]
+    [InlineData("""{"releases-index":[{"releases.json":"https://example.invalid/10.0/releases.json"}]}""", Channel)]
+    [InlineData("""{"releases-index":[{"channel-version":"10.0"}]}""", Channel)]
+    [InlineData(Index, "{}")]
+    [InlineData(Index, """{"releases":"invalid"}""")]
+    [InlineData(Index, """{"releases":[{"sdk":{"version":12}}]}""")]
+    public async Task MalformedReleaseMetadataReportsCoverageInsteadOfCrashing(string index, string channel)
+    {
+        using var fixture = new Fixture();
+        fixture.File("global.json", """{"sdk":{"version":"10.0.101"}}""");
+        var (findings, coverage) = await SdkServicing.CheckAsync(
+            WorkspaceDiscovery.Discover(fixture.Root), new Releases(index, channel));
+        Assert.Empty(findings);
+        Assert.Contains(coverage, c => c.Assessment is Assessment.Blocked or Assessment.Partial);
     }
     sealed class BrokenSource : IReleaseMetadata
     {
@@ -239,6 +325,65 @@ public sealed class FoundationTests
     }
 
     [Fact]
+    public void LegacyStateMigratesSnapshotsJobsAndVersionSkips()
+    {
+        using var fixture = new Fixture();
+        var report = Report(fixture, Finding());
+        var legacy = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(report, Contract.Json))!;
+        legacy["workspace"]!.AsObject().Remove("workspaceId");
+        var database = Path.Combine(fixture.Root, "state", "state.sqlite");
+        using (fixture.State()) { }
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection(
+            new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+            { DataSource = database, Pooling = false }.ToString()))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE snapshots(worktree TEXT PRIMARY KEY,repository TEXT NOT NULL,
+                  report TEXT NOT NULL,scanned INTEGER NOT NULL);
+                CREATE TABLE scan_jobs(worktree TEXT PRIMARY KEY,requested INTEGER NOT NULL,status TEXT NOT NULL);
+                UPDATE schema_version SET version=1;
+                """;
+            command.ExecuteNonQuery();
+            command.CommandText = """
+                INSERT INTO snapshots(worktree,repository,report,scanned) VALUES($w,$r,$json,1);
+                INSERT INTO scan_jobs(worktree,requested,status) VALUES($w,1,'pending');
+                INSERT INTO decisions(repository,subject,category,action,candidate,revision,recorded)
+                VALUES($r,'sdk:root','sdk','skip-version','10.0.113','r1',1);
+                """;
+            command.Parameters.AddWithValue("$w", report.Workspace.WorktreeId);
+            command.Parameters.AddWithValue("$r", report.Workspace.RepositoryId);
+            command.Parameters.AddWithValue("$json", legacy.ToJsonString());
+            command.ExecuteNonQuery();
+        }
+        using var migrated = fixture.State();
+        Assert.Equal("r1", migrated.Latest(report.Workspace.WorkspaceId)!.Findings.Single().Revision);
+        Assert.Equal("version-skipped", migrated.Suppression(report.Workspace.RepositoryId, Finding()));
+        Assert.Contains(migrated.Status(report.Workspace.RepositoryId, report.Workspace.WorktreeId,
+            report.Workspace.WorkspaceId).Coverage, c => c.Check == "scan-job");
+    }
+
+    [Fact]
+    public void SkippingAnotherCandidateDoesNotForgetEarlierCandidate()
+    {
+        using var fixture = new Fixture();
+        using var state = fixture.State();
+        var a = Finding();
+        var b = Finding("r2", "10.0.114");
+        var report = Report(fixture, a);
+        state.Save(report);
+        var repo = report.Workspace.RepositoryId;
+        var scope = report.Workspace.WorkspaceId;
+        state.Decide(repo, scope, a.Id, a.Revision, DecisionAction.SkipVersion, null);
+        state.Save(report with { Findings = [b] });
+        state.Decide(repo, scope, b.Id, b.Revision, DecisionAction.SkipVersion, null);
+        state.Save(report);
+        Assert.Equal("version-skipped", state.Suppression(repo, a));
+        Assert.Equal("version-skipped", state.Suppression(repo, b));
+    }
+
+    [Fact]
     public void DecisionsAreRevisionBoundAcrossWorktreesAndLeasesAreAtomic()
     {
         using var fixture = new Fixture();
@@ -248,26 +393,44 @@ public sealed class FoundationTests
         var report = Report(fixture, Finding());
         first.Save(report);
         var repo = report.Workspace.RepositoryId;
-        var tree = report.Workspace.WorktreeId;
+        var scope = report.Workspace.WorkspaceId;
         Assert.True(first.TryLease(repo, Finding(), "copilot", TimeSpan.FromMinutes(2)));
         Assert.False(second.TryLease(repo, Finding(), "claude", TimeSpan.FromMinutes(2)));
         clock.Now = clock.Now.AddMinutes(3);
         Assert.True(second.TryLease(repo, Finding(), "claude", TimeSpan.FromMinutes(2)));
         second.MarkDelivered(repo, Finding(), "claude");
         Assert.False(first.TryLease(repo, Finding(), "copilot", TimeSpan.FromMinutes(2)));
-        first.Decide(repo, tree, "sdk:root", "r1", DecisionAction.SkipVersion, null);
+        first.Decide(repo, scope, "sdk:root", "r1", DecisionAction.SkipVersion, null);
         Assert.Equal("version-skipped", second.Suppression(repo, Finding()));
         Assert.Null(second.Suppression(repo, Finding("r2", "10.0.114")));
         Assert.Throws<InvalidOperationException>(() =>
-            first.Decide(repo, tree, "sdk:root", "r2", DecisionAction.Snooze, clock.Now.AddDays(1)));
-        first.Decide(repo, tree, "sdk:root", "r1", DecisionAction.Snooze, clock.Now.AddHours(1));
+            first.Decide(repo, scope, "sdk:root", "r2", DecisionAction.Snooze, clock.Now.AddDays(1)));
+        first.Decide(repo, scope, "sdk:root", "r1", DecisionAction.Snooze, clock.Now.AddHours(1));
         Assert.Equal("snoozed", second.Suppression(repo, Finding("r2", "10.0.114")));
         clock.Now = clock.Now.AddHours(2);
         Assert.Null(second.Suppression(repo, Finding("r2", "10.0.114")));
-        first.Decide(repo, tree, "sdk:root", "r1", DecisionAction.DisableCategory, null);
+        first.Decide(repo, scope, "sdk:root", "r1", DecisionAction.DisableCategory, null);
         Assert.Equal("category-disabled", second.Suppression(repo, Finding("r2", "10.0.114")));
-        first.Decide(repo, tree, "sdk:root", "r1", DecisionAction.EnableCategory, null);
+        first.Decide(repo, scope, "sdk:root", "r1", DecisionAction.EnableCategory, null);
         Assert.Null(second.Suppression(repo, Finding("r2", "10.0.114")));
+    }
+
+    [Fact]
+    public async Task ConcurrentRoutineLeasesForDifferentSubjectsRespectRepositoryBudget()
+    {
+        using var fixture = new Fixture();
+        var clock = new Clock();
+        using var first = fixture.State(clock);
+        using var second = fixture.State(clock);
+        var repo = WorkspaceDiscovery.Discover(fixture.Root).RepositoryId;
+        var a = Finding() with { Id = "a", SubjectKey = "a" };
+        var b = Finding() with { Id = "b", SubjectKey = "b" };
+        var results = await Task.WhenAll(
+            Task.Run(() => first.TryLease(repo, a, "copilot:a", TimeSpan.FromMinutes(2))),
+            Task.Run(() => second.TryLease(repo, b, "claude:b", TimeSpan.FromMinutes(2))));
+        Assert.Single(results, value => value);
+        clock.Now = clock.Now.AddMinutes(3);
+        Assert.True(first.TryLease(repo, b, "copilot:retry", TimeSpan.FromMinutes(2)));
     }
 
     [Fact]
