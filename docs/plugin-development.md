@@ -101,6 +101,10 @@ provided locally, the setup helper accepts a ZIP or tar archive containing one
 RID-appropriate self-contained publish tree with `dotnet-nudge` (or
 `dotnet-nudge.exe` on Windows) at the archive root:
 
+On macOS, create tar archives with `COPYFILE_DISABLE=1 tar ...` (or another
+metadata-free archiver). The default tar behavior may add AppleDouble `._*`
+members, which the installer's strict archive validation correctly rejects.
+
 ```sh
 python3 plugins/dotnet-nudge/scripts/setup-runtime.py \
   --archive /path/to/dotnet-nudge-<version>-<rid>.zip \

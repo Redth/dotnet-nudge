@@ -408,10 +408,28 @@ public sealed class ProtocolTests
                 }
                 File.WriteAllText(assets, fixture.Replace("1.0.0", "1.0.1", StringComparison.Ordinal));
                 await Assert.ThrowsAsync<InvalidOperationException>(() => service.PackageContextAsync(root, handle));
-                var changed = await PackageIntegration.ScanAsync(inventory, stateDir, CancellationToken.None);
-                Assert.Contains(changed.Findings, f => f.Kind == "restored-graph-change" &&
-                    f.Scope.Project == "App.csproj" && f.Scope.Framework == "net8.0" &&
-                    f.Current == "1.0.0" && f.Candidate == "1.0.1");
+                var processStart = new ProcessStartInfo(engine ?? "dotnet")
+                {
+                    RedirectStandardOutput = true, RedirectStandardError = true,
+                    UseShellExecute = false, WorkingDirectory = root
+                };
+                if (engine is null)
+                    processStart.ArgumentList.Add(typeof(DotnetNudge.McpEndpoint).Assembly.Location);
+                foreach (var arg in new[] { "scan", "--workspace", root, "--state-dir", stateDir, "--json" })
+                    processStart.ArgumentList.Add(arg);
+                using var process = Process.Start(processStart)!;
+                var output = process.StandardOutput.ReadToEndAsync();
+                var error = process.StandardError.ReadToEndAsync();
+                using var scanTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                await process.WaitForExitAsync(scanTimeout.Token);
+                Assert.True(process.ExitCode == 0, await error);
+                using var changed = JsonDocument.Parse(await output);
+                Assert.Contains(changed.RootElement.GetProperty("findings").EnumerateArray(), f =>
+                    f.GetProperty("kind").GetString() == "restored-graph-change" &&
+                    f.GetProperty("scope").GetProperty("project").GetString() == "App.csproj" &&
+                    f.GetProperty("scope").GetProperty("framework").GetString() == "net8.0" &&
+                    f.GetProperty("current").GetString() == "1.0.0" &&
+                    f.GetProperty("candidate").GetString() == "1.0.1");
         }
         finally { Directory.Delete(root, recursive: true); }
     }
