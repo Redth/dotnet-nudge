@@ -112,7 +112,7 @@ public static class SdkServicing
         if (workspace.SdkDeclarations.Count == 0)
         {
             coverage.Add(new("sdk-servicing", Assessment.Unknown,
-                "No global.json pin found; effective installed SDK has not been observed."));
+                "No global.json pin found; release-metadata servicing cannot assess a declaration."));
             return (findings, coverage);
         }
         JsonDocument index;
@@ -155,7 +155,7 @@ public static class SdkServicing
                 if (!NuGetVersion.TryParse(declaration.Version, out var pinned))
                 {
                     coverage.Add(new("sdk:" + declaration.Scope, Assessment.Unknown,
-                        "No parseable declared SDK version; effective selection not observed."));
+                    "No parseable declared SDK version; review separate effective SDK probe coverage."));
                     continue;
                 }
                 var channel = $"{pinned.Major}.{pinned.Minor}";
@@ -210,7 +210,7 @@ public static class SdkServicing
                         coverage.Add(new("sdk:" + declaration.Scope,
                             indexFreshness == Assessment.Stale || result.Freshness == Assessment.Stale
                                 ? Assessment.Stale : Assessment.Partial,
-                            "No newer same-band SDK in available metadata; effective SDK selection remains unobserved." +
+                            "No newer same-band SDK in available metadata; review separate effective SDK probe coverage." +
                             (malformed ? " Some release entries were malformed." : "")));
                         continue;
                     }
@@ -231,7 +231,7 @@ public static class SdkServicing
                     coverage.Add(new("sdk:" + declaration.Scope,
                         indexFreshness == Assessment.Stale || result.Freshness == Assessment.Stale
                             ? Assessment.Stale : Assessment.Partial,
-                        "A newer SDK exists in the declared feature band; installed/effective SDK not observed. " +
+                        "A newer SDK exists in the declared feature band; review installed/effective probe coverage separately. " +
                         $"Declared policy: rollForward={declaration.RollForward ?? "(default)"}, " +
                         $"allowPrerelease={declaration.AllowPrerelease?.ToString() ?? "(host-dependent; previews excluded)"}, " +
                         $"paths={string.Join(",", declaration.Paths)}." +
@@ -259,6 +259,7 @@ public sealed class NudgeScanner(IReleaseMetadata metadata, TimeProvider? clock 
             state.DirectoryPath, cancellationToken);
         return new(Contract.Version, inventory, findings.Concat(packages?.Findings ?? []).ToArray(),
             inventory.Coverage.Where(c => observed is null || c.Check != "effective-sdk")
+                .Where(c => packages is null || c.Check != "nuget-resolved-graph")
                 .Concat(sdkCoverage).Concat(observed?.Coverage ?? [])
                 .Concat(packages?.Coverage ?? []).ToArray(),
             (clock ?? TimeProvider.System).GetUtcNow());

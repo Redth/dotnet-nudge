@@ -25,6 +25,9 @@ public static class PackageIntegration
         var coverage = new List<Coverage>();
         var reader = new PackageGraphReader();
         var assessed = 0;
+        if (workspace.Projects.Count == 0)
+            coverage.Add(new("package-graph", Assessment.Unknown,
+                "No SDK-style projects were discovered in the admitted workspace."));
         foreach (var project in workspace.Projects.Take(MaxGraphs))
         {
             token.ThrowIfCancellationRequested();
@@ -132,6 +135,8 @@ public static class PackageIntegration
         string? selectedAssets = null;
         string? selectedProject = null;
         var diagnostics = new List<string>();
+        if (workspace.Projects.Count == 0)
+            diagnostics.Add("No SDK-style projects were discovered in the admitted workspace.");
         foreach (var project in workspace.Projects.Take(MaxGraphs))
         {
             var (graph, _) = ReadGraph(workspace, project, reader);
@@ -140,7 +145,10 @@ public static class PackageIntegration
                 diagnostics.Add($"{project}: {graph.Diagnostic}");
                 continue;
             }
-            var restored = graph.Packages.Where(n => n.Direct && n.PackagePath is not null).ToArray();
+            var direct = graph.Packages.Where(n => n.Direct).ToArray();
+            foreach (var missing in direct.Where(n => n.PackagePath is null).Take(8))
+                diagnostics.Add($"{project}/{missing.Id}@{missing.Version}: exact restored package path unavailable.");
+            var restored = direct.Where(n => n.PackagePath is not null).ToArray();
             if (restored.Length > MaxGuidancePackages)
                 diagnostics.Add($"{project}: guidance limited to {MaxGuidancePackages} direct package entries.");
             foreach (var node in restored.Take(MaxGuidancePackages))
@@ -193,7 +201,8 @@ public static class PackageIntegration
                 "Pinned inspector row was missing or ambiguous for the selected package scope; local reader was used.");
         }
         return new(Contract.Version, workspace.WorkspaceId,
-            diagnostics.Count == 0 ? Assessment.Confirmed : Assessment.Partial, skills,
+            diagnostics.Count == 0 ? Assessment.Confirmed :
+                workspace.Projects.Count == 0 ? Assessment.Unknown : Assessment.Partial, skills,
             selected, entry, references,
             diagnostics.Count == 0 ? null : string.Join("; ", diagnostics.Take(8)));
     }

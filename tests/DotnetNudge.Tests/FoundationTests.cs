@@ -248,7 +248,7 @@ public sealed class FoundationTests
         var (findings, coverage) = await SdkServicing.CheckAsync(workspace, new Releases(Index, Channel));
         Assert.Equal("10.0.113", Assert.Single(findings).Candidate);
         Assert.Equal(Assessment.Partial, Assert.Single(findings).Assessment);
-        Assert.Contains(coverage, c => c.Detail.Contains("effective SDK not observed"));
+        Assert.Contains(coverage, c => c.Detail.Contains("probe coverage"));
         fixture.File("global.json", """{"sdk":{"version":"10.0.113","allowPrerelease":true}}""");
         var (previews, _) = await SdkServicing.CheckAsync(
             WorkspaceDiscovery.Discover(fixture.Root), new Releases(Index, Channel));
