@@ -27,6 +27,13 @@ if SETUP_SPEC is None or SETUP_SPEC.loader is None:
     raise RuntimeError("Could not load the runtime setup helper for contract tests.")
 SETUP_RUNTIME = importlib.util.module_from_spec(SETUP_SPEC)
 SETUP_SPEC.loader.exec_module(SETUP_RUNTIME)
+RELEASE_SPEC = importlib.util.spec_from_file_location(
+    "dotnet_nudge_release_runtime", ROOT / "scripts/release-runtime.py"
+)
+if RELEASE_SPEC is None or RELEASE_SPEC.loader is None:
+    raise RuntimeError("Could not load the runtime release packager for contract tests.")
+RELEASE_RUNTIME = importlib.util.module_from_spec(RELEASE_SPEC)
+RELEASE_SPEC.loader.exec_module(RELEASE_RUNTIME)
 HOOK_EVENTS = {
     "sessionStart": "session-start",
     "userPromptSubmitted": "prompt-submit",
@@ -40,8 +47,8 @@ CLAUDE_EVENTS = {
     "SessionEnd": ("session-end", "SessionEnd"),
 }
 SETUP_DIAGNOSTIC = (
-    "dotnet-nudge: runtime setup is required. Use nudge-maintain for local setup guidance; "
-    "no runtime was downloaded or run."
+    "dotnet-nudge: runtime setup is required. MCP will automatically download and verify the engine "
+    "on first use; hooks never download or run a missing engine."
 )
 
 
@@ -99,7 +106,7 @@ class PluginManifestTests(unittest.TestCase):
             {
                 "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
                 "name": "dotnet-nudge",
-                "version": "0.1.0",
+                "version": "0.2.0",
                 "description": "A .NET maintenance plugin with shared skills and host-specific hooks; engine actions remain explicit.",
                 "author": {"name": "Redth"},
                 "repository": "https://github.com/Redth/dotnet-nudge",
@@ -139,18 +146,22 @@ class PluginManifestTests(unittest.TestCase):
         portable_mcp = read_json(plugin_dir / "mcp.json")
         native_mcp = read_json(plugin_dir / ".mcp.json")
         self.assertEqual(portable_mcp["$schema"], "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json")
-        for config, placeholder in ((portable_mcp, "${PLUGIN_DATA}"),
-                                    (native_mcp, "${CLAUDE_PLUGIN_DATA}")):
+        for config, placeholder, root_placeholder in (
+            (portable_mcp, "${PLUGIN_DATA}", "${PLUGIN_ROOT}"),
+            (native_mcp, "${CLAUDE_PLUGIN_DATA}", "${CLAUDE_PLUGIN_ROOT}"),
+        ):
             self.assertEqual(set(config["mcpServers"]), {"dotnet-nudge"})
             server = config["mcpServers"]["dotnet-nudge"]
             self.assertEqual(server["type"], "stdio")
-            self.assertEqual(server["command"], "dotnet-nudge")
-            self.assertEqual(server["args"], ["mcp"])
+            self.assertEqual(server["command"], "node")
+            self.assertEqual(server["args"], [f"{root_placeholder}/scripts/run.cjs", "mcp"])
             self.assertEqual(server["env"], {"NUDGE_PLUGIN_DATA": placeholder})
 
         runtime = read_json(plugin_dir / "runtime-manifest.json")
-        self.assertEqual(runtime["status"], "unpublished")
+        self.assertEqual(runtime["status"], "release-channel")
         self.assertEqual(runtime["artifacts"], [])
+        self.assertEqual(runtime["releaseManifestUrl"],
+                         "https://github.com/Redth/dotnet-nudge/releases/latest/download/runtime-manifest.json")
         self.assertNotIn("url", runtime)
         self.assertNotIn("sha256", runtime)
 
@@ -278,6 +289,8 @@ class LauncherTests(unittest.TestCase):
             {
                 "NUDGE_ENGINE_PATH": sys.executable,
                 "NUDGE_STATE_DIR": str(self.state),
+                "XDG_DATA_HOME": str(self.temp_root / "fallback data"),
+                "LOCALAPPDATA": str(self.temp_root / "fallback data"),
                 "FIXTURE_CAPTURE": str(self.capture),
                 "FIXTURE_ARGS": str(self.args_capture),
                 "FIXTURE_STATE_CAPTURE": str(self.state_capture),
@@ -423,7 +436,7 @@ class LauncherTests(unittest.TestCase):
         ):
             with self.subTest(host=host, launcher=launcher.__name__):
                 state = self.temp_root / f"once-only state {host}"
-                env = os.environ.copy()
+                env = self.base_env()
                 env.pop("NUDGE_ENGINE_PATH", None)
                 env.pop("COPILOT_PLUGIN_DATA", None)
                 env.pop("CLAUDE_PLUGIN_DATA", None)
@@ -756,6 +769,46 @@ class RuntimeSetupTests(unittest.TestCase):
         device_name = self.run_setup()
         self.assertNotEqual(device_name.returncode, 0)
         self.assertFalse((self.state / "engine" / "1.2.3" / self.rid / self.exe_name).exists())
+
+
+class RuntimeReleaseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory(prefix="dotnet-nudge release ")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.publish = self.root / "publish"
+        self.publish.mkdir()
+        self.dist = self.root / "dist"
+        self.output = self.root / "runtime-manifest.json"
+
+    def test_manifest_requires_all_six_real_assets_and_matching_hashes(self) -> None:
+        for rid in read_json(PLUGIN / "runtime-manifest.json")["supportedRids"]:
+            executable = self.publish / ("dotnet-nudge.exe" if rid.startswith("win-") else "dotnet-nudge")
+            executable.write_bytes(f"self-contained fixture for {rid}".encode())
+            RELEASE_RUNTIME.package(self.publish, self.dist, "1.2.3", rid)
+            executable.unlink()
+        RELEASE_RUNTIME.manifest(self.dist, self.output, "1.2.3")
+        result = read_json(self.output)
+        self.assertEqual(result["status"], "published")
+        self.assertEqual(result["version"], "1.2.3")
+        self.assertEqual(len(result["artifacts"]), 6)
+        first = result["artifacts"][0]
+        asset = self.dist / first["url"].rsplit("/", 1)[-1]
+        self.assertEqual(hashlib.sha256(asset.read_bytes()).hexdigest(), first["sha256"])
+        asset.write_bytes(b"tampered")
+        with self.assertRaisesRegex(ValueError, "Archive digest mismatch"):
+            RELEASE_RUNTIME.manifest(self.dist, self.output, "1.2.3")
+
+    def test_incomplete_release_and_unbundled_native_dependencies_are_rejected(self) -> None:
+        self.dist.mkdir()
+        with self.assertRaises(FileNotFoundError):
+            RELEASE_RUNTIME.manifest(self.dist, self.output, "1.2.3")
+        self.assertFalse(self.output.exists())
+        (self.publish / "dotnet-nudge").write_bytes(b"fixture engine")
+        (self.publish / "libe_sqlite3.dylib").write_bytes(b"unbundled native dependency")
+        with self.assertRaisesRegex(ValueError, "bundle all dependencies"):
+            RELEASE_RUNTIME.package(self.publish, self.dist, "1.2.3", "osx-arm64")
+        self.assertEqual(list(self.dist.iterdir()), [])
 
 
 def io_bytes(value: bytes):

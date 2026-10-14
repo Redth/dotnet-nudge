@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Reflection;
 using DotnetNudge;
 using DotnetNudge.Core;
 using DotnetNudge.Trials;
@@ -10,7 +11,7 @@ static async Task<int> Run(string[] args)
     if (args.Length == 0 || args[0] is "-h" or "--help" or "help")
     {
         Console.WriteLine("""
-            dotnet-nudge 1.0
+            dotnet-nudge
             mcp [--state-dir PATH]
             scan --workspace PATH [--state-dir PATH] --json
             status --workspace PATH [--state-dir PATH] --json
@@ -28,7 +29,9 @@ static async Task<int> Run(string[] args)
     }
     if (args[0] is "version" or "--version")
     {
-        Console.WriteLine("dotnet-nudge 1.0.0");
+        var version = typeof(McpEndpoint).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion.Split('+')[0];
+        Console.WriteLine($"dotnet-nudge {version}");
         return 0;
     }
     var hook = args[0] == "hook";

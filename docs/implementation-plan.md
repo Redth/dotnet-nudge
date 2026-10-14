@@ -260,9 +260,10 @@ Do not put every platform binary in Git history. Publish versioned release
 archives for macOS, Windows, and Linux, initially x64/arm64 where supported.
 The plugin pins the engine version and archive digest.
 
-An explicit first-use setup skill downloads the matching archive from this
-repository's release, verifies its digest/signature or release provenance,
-and installs it into writable local data. Hooks must never silently download
+The shared Node.js launcher automatically downloads the matching self-contained
+engine on first MCP/CLI use, verifies the repository-hosted manifest's archive
+and executable SHA-256 digests, and installs it into writable local data.
+`NUDGE_AUTO_SETUP=0` disables automatic setup. Hooks must never silently download
 and execute a new binary or run `curl | sh`.
 
 If the executable is missing, expose a single setup-required diagnostic and

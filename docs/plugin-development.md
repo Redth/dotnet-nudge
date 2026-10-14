@@ -1,8 +1,8 @@
 # Plugin development
 
 This document covers marketplace packaging, hook contracts, and local
-validation. The .NET engine and MCP/publishing work are separate phases; do not
-infer their completion from this plugin package.
+validation, automatic runtime bootstrap and release packaging. Publishing code
+does not imply that an engine release has already been published.
 
 ## Layout and host loading
 
@@ -51,11 +51,14 @@ uses `hookSpecificOutput`. Copilot drops command-hook output from
 injection. Neither adapter invokes a model, starts restore/build, installs
 tools, or blocks turn completion.
 
-The Bash and PowerShell wrappers resolve an explicit `NUDGE_ENGINE_PATH`
-override first, then an engine in the plugin's `bin/` or the writable user-data
-engine location. Host plugin-data locations are fallback candidates. Paths are
-quoted as single arguments, including paths containing spaces. The wrappers
-use no `jq` or Node.js.
+The Bash and PowerShell wrappers call the same Node.js launcher as MCP and CLI
+commands, `scripts/run.cjs`. Node.js 22 or newer must be on the host's `PATH`.
+The launcher resolves `NUDGE_ENGINE_PATH`, plugin `bin/`, the selected state
+directory's engine, the shared platform user-data engine, host plugin-data
+engines, then `dotnet-nudge` on `PATH`, in that order. An invalid explicit
+override fails rather than silently selecting another executable. Versioned
+install pointers must select the current RID; links and traversal are rejected.
+Paths with spaces remain single arguments, and engine streams are inherited.
 
 If no engine is found, the wrapper emits one bounded, host-correct setup
 diagnostic and records its once-only marker in the writable state directory,
@@ -64,40 +67,55 @@ and is shared by the two adapters when set. If state storage is unavailable or
 invalid, the wrapper emits an explicit error to stderr and omits the chat
 diagnostic rather than writing into the plugin cache.
 
-## Runtime setup boundary
+## Automatic runtime setup
 
-There is no published engine release or trusted release digest in this
-repository yet. `runtime-manifest.json` therefore declares an unpublished
-status and an empty artifact list; do not invent a release URL, version pin, or
-checksum.
+The checked-in `runtime-manifest.json` describes a release channel, not
+fabricated artifact digests. On first MCP/CLI use without an installed engine,
+the launcher reads this repository's latest stable release manifest. A bundled
+published manifest can instead pin an exact release. Only exact version/RID
+asset URLs under `Redth/dotnet-nudge` are accepted. The downloaded gzip asset
+and decompressed executable must both match the manifest's SHA-256 digests
+before any executable is selected or run. Downloads and expanded payloads are
+bounded; failures leave no selected partial engine and go to stderr only.
+SHA-256 verifies content against the repository-hosted manifest; it is not a
+separate publisher signature.
 
-For local development, build or obtain an engine executable separately and
-set `NUDGE_ENGINE_PATH` before launching the host. MCP launches the
-`dotnet-nudge` executable through `PATH` on Linux, macOS and Windows; add the
-directory containing the same executable to `PATH` before launching the host.
-`NUDGE_ENGINE_PATH` alone configures hooks, **not** MCP. An executable named
-`dotnet-nudge`/`dotnet-nudge.exe` must already exist; the plugin does not
-build, download, or install it automatically. For example, after a local
-self-contained publish:
+The engine is a self-contained single-file publish, including native SQLite
+libraries. Installation uses a staged version/RID directory and an atomic
+`engine/current` selection in shared platform user data, or `NUDGE_STATE_DIR`
+when specified. Simultaneous MCP starts coordinate through a setup lock.
+Normal starts reuse the installation without checking for updates or needing
+network access. A crashed setup's remaining lock produces a bounded error;
+remove only that named lock after confirming no setup process is running.
+Set `NUDGE_AUTO_SETUP=0` to disable automatic downloads. Hooks never initiate
+setup, and their missing-engine notice remains bounded and once-only.
+
+If no public engine release is available, automatic setup fails explicitly;
+do not claim that the workspace was assessed.
+For development, supply a built engine through `NUDGE_ENGINE_PATH`. That
+override works identically for hooks, MCP and the CLI launcher, without changing
+`PATH`. For example:
 
 ```sh
-dotnet publish src/DotnetNudge/DotnetNudge.csproj -c Release -r osx-arm64 --self-contained true -o /your/engine/directory
+dotnet publish src/DotnetNudge/DotnetNudge.csproj -c Release -r osx-arm64 \
+  --self-contained true -p:PublishSingleFile=true \
+  -p:IncludeNativeLibrariesForSelfExtract=true -o /your/engine/directory
 export NUDGE_ENGINE_PATH=/your/engine/directory/dotnet-nudge
-export PATH="/your/engine/directory:$PATH"
+node plugins/dotnet-nudge/scripts/run.cjs version
 ```
 
 Use your actual RID and path; on Windows PowerShell, set
-`$env:NUDGE_ENGINE_PATH` to the full `.exe` path and prepend its directory
-with `$env:PATH = "C:\path\to\engine;$env:PATH"`. Do not use an OS-incompatible
-shell launcher. The MCP plugin config supplies `NUDGE_PLUGIN_DATA` from its
+`$env:NUDGE_ENGINE_PATH` to the full `.exe` path. Both MCP configurations invoke
+`node` with their host's plugin-root placeholder. The MCP config supplies
+`NUDGE_PLUGIN_DATA` from its
 host's writable plugin data directory; the hook wrapper uses the matching
 host plugin-data path. To override both, set `NUDGE_STATE_DIR` in the host
 environment before starting it. Never put state in the read-only plugin
 cache. The MCP process reads the workspace only from client roots or an
 explicit `nudge_register(workspace)` call, never from its own cwd.
 
-When a trusted archive is
-provided locally, the setup helper accepts a ZIP or tar archive containing one
+For an explicitly supplied local archive, the optional Python 3.10+ setup
+helper still accepts a ZIP or tar archive containing one
 RID-appropriate self-contained publish tree with `dotnet-nudge` (or
 `dotnet-nudge.exe` on Windows) at the archive root:
 
@@ -121,8 +139,25 @@ are retained (including native SQLite dependencies); links and special files
 are rejected. The versioned payload is installed under the platform user-data directory or the
 explicit `NUDGE_STATE_DIR`; use `--state-dir` for a one-off explicit location
 and `--replace` only when intentionally replacing an installed engine. Only
-the six declared `linux|osx|win` x64/arm64 RIDs are accepted. Release downloads
-are planned future behavior, not implemented behavior.
+the six declared `linux|osx|win` x64/arm64 RIDs are accepted. The Node launcher
+discovers this installer selection too, so local archive setup needs no `PATH`
+change.
+
+## Publishing engines
+
+`.github/workflows/runtime-release.yml` builds native single-file engines on
+all six advertised RIDs, checks native SQLite and MCP startup, and packages
+each executable as a deterministic gzip asset. `scripts/release-runtime.py`
+derives archive and executable hashes from the actual published bytes and
+refuses a publish directory containing unbundled dependencies. The release
+job requires all six assets and revalidates their digests before generating
+the published `runtime-manifest.json` and creating the GitHub release.
+
+Publishing a `v<version>` tag triggers release creation; pull requests only
+exercise builds and packaging. Version reporting comes from the engine's
+assembly metadata, set from the tag, rather than a hardcoded CLI string.
+Creating or pushing a version tag is a separate, explicitly authorized action,
+not something the plugin or tests perform.
 
 ## Local engine commands
 
@@ -168,9 +203,18 @@ engines; it does not depend on files from the engine implementation:
 python -m unittest discover -s tests/plugin-contracts -v
 ```
 
-CI runs this suite on Linux, macOS, and Windows. It validates manifests,
+CI also runs the offline Node bootstrap suite:
+
+```sh
+node --test tests/plugin-contracts/runtime.test.cjs
+```
+
+CI runs these suites on Linux, macOS, and Windows. They validate manifests,
 host-event mappings, safe relative paths, launcher argument/stream behavior,
-once-only setup notices, and installer checksum/traversal rejection.
+once-only setup notices, automatic download verification, concurrent first use,
+offline reuse, failed-install cleanup, recovery, and unsafe installation
+rejection. Set `NUDGE_INTEGRATION_ENGINE_PATH` to a built self-contained engine
+to additionally initialize a real MCP process through the launcher.
 
 When host CLIs are available, validate in isolation:
 

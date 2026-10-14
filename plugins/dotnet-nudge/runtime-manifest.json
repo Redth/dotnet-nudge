@@ -1,7 +1,8 @@
 {
   "schemaVersion": 1,
   "engine": "dotnet-nudge",
-  "status": "unpublished",
+  "status": "release-channel",
+  "releaseManifestUrl": "https://github.com/Redth/dotnet-nudge/releases/latest/download/runtime-manifest.json",
   "supportedRids": [
     "linux-x64",
     "linux-arm64",
@@ -10,6 +11,6 @@
     "win-x64",
     "win-arm64"
   ],
-  "archiveContract": "A ZIP or tar archive containing a self-contained publish tree with the RID-appropriate dotnet-nudge executable at its root.",
+  "archiveContract": "Release bootstrap uses a SHA-256-verified gzip-compressed self-contained single-file executable with bundled native libraries. Explicit local setup also supports ZIP/tar publish trees.",
   "artifacts": []
 }

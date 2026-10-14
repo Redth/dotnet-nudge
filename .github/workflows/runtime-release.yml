@@ -1,0 +1,118 @@
+name: Engine runtime release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  pull_request:
+    paths:
+      - "src/**"
+      - "plugins/dotnet-nudge/scripts/**"
+      - "plugins/dotnet-nudge/runtime-manifest.json"
+      - "scripts/release-runtime.py"
+      - "tests/plugin-contracts/**"
+      - ".github/workflows/runtime-release.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            executable: dotnet-nudge
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+            executable: dotnet-nudge
+          - os: macos-15-intel
+            rid: osx-x64
+            executable: dotnet-nudge
+          - os: macos-latest
+            rid: osx-arm64
+            executable: dotnet-nudge
+          - os: windows-latest
+            rid: win-x64
+            executable: dotnet-nudge.exe
+          - os: windows-11-arm
+            rid: win-arm64
+            executable: dotnet-nudge.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          architecture: ${{ endsWith(matrix.rid, 'arm64') && 'arm64' || 'x64' }}
+      - name: Select release version
+        shell: bash
+        run: |
+          version=1.0.0
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Publish self-contained single-file engine with native libraries
+        run: >-
+          dotnet publish src/DotnetNudge/DotnetNudge.csproj -c Release
+          -r ${{ matrix.rid }} --self-contained true -o publish
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:Version=${{ env.RELEASE_VERSION }}
+      - name: Package verified gzip asset
+        run: >-
+          python scripts/release-runtime.py package --publish-dir publish
+          --version ${{ env.RELEASE_VERSION }} --rid ${{ matrix.rid }} --output dist
+      - name: Verify single-file SQLite and MCP startup
+        shell: bash
+        env:
+          NUDGE_STATE_DIR: ${{ runner.temp }}/nudge-state
+          NUDGE_ENGINE_PATH: ${{ github.workspace }}/publish/${{ matrix.executable }}
+        run: |
+          node plugins/dotnet-nudge/scripts/run.cjs version
+          node plugins/dotnet-nudge/scripts/run.cjs doctor --json
+          node --test tests/plugin-contracts/runtime.test.cjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-${{ matrix.rid }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: package
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: engine-*
+          path: dist
+          merge-multiple: true
+      - name: Validate all six assets and generate pinned release manifest
+        run: >-
+          python scripts/release-runtime.py manifest --artifacts-dir dist
+          --version "${GITHUB_REF_NAME#v}" --output dist/runtime-manifest.json
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          options=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            options+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" dist/*.gz dist/runtime-manifest.json \
+            --verify-tag --title "dotnet-nudge ${GITHUB_REF_NAME#v}" "${options[@]}" \
+            --notes "Self-contained engines for Linux, macOS and Windows on x64 and arm64. The plugin verifies the release manifest's archive and executable SHA-256 digests before first-use startup."
