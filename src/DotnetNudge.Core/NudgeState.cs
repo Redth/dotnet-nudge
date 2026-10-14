@@ -339,6 +339,39 @@ public sealed class NudgeState : IDisposable
             skipped ? "version-skipped" : null;
     }
 
+    public IReadOnlyList<CategoryPreference> DisabledCategories(string repository)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT category,recorded FROM decisions
+            WHERE repository=$r AND subject='*' AND action='disable-category'
+            ORDER BY category
+            """;
+        command.Parameters.AddWithValue("$r", repository);
+        var categories = new List<CategoryPreference>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+            categories.Add(new(reader.GetString(0),
+                DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(1))));
+        return categories;
+    }
+
+    public CategoryPreferenceResult EnableCategory(string repository, string category)
+    {
+        if (string.IsNullOrWhiteSpace(category))
+            throw new ArgumentException("A category name is required.", nameof(category));
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            DELETE FROM decisions WHERE repository=$r AND subject='*'
+            AND category=$c AND action='disable-category'
+            """;
+        command.Parameters.AddWithValue("$r", repository);
+        command.Parameters.AddWithValue("$c", category);
+        if (command.ExecuteNonQuery() != 1)
+            throw new InvalidOperationException("The category is not disabled for this repository.");
+        return new(Contract.Version, category, "enable-category", clock.GetUtcNow());
+    }
+
     public DecisionResult Decide(string repository, string workspace, string findingId,
         string revision, DecisionAction action, DateTimeOffset? until)
     {

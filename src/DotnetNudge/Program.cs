@@ -15,6 +15,7 @@ static async Task<int> Run(string[] args)
             status --workspace PATH [--state-dir PATH] --json
             package-context --workspace PATH [--handle EXACT_HANDLE] [--state-dir PATH] --json
             package-assess --workspace PATH --project RELATIVE_PROJECT --framework TFM --package ID --sources NAME[,NAME...] --approve-metadata [--rid RID] [--state-dir PATH] --json
+            preferences --workspace PATH [--enable-category NAME] [--state-dir PATH] --json
             decision --workspace PATH --finding ID --revision REV --action snooze|skip-version|disable-category|enable-category [--until TIMESTAMP] [--state-dir PATH] --json
             doctor [--workspace PATH] [--state-dir PATH] --json
             hook --host copilot|claude --event session-start|prompt-submit|post-tool-use|session-end [--state-dir PATH]
@@ -49,6 +50,7 @@ static async Task<int> Run(string[] args)
             "package-context" => ["--workspace", "--handle", "--state-dir", "--json"],
             "package-assess" => ["--workspace", "--project", "--framework", "--package",
                 "--sources", "--approve-metadata", "--rid", "--state-dir", "--json"],
+            "preferences" => ["--workspace", "--enable-category", "--state-dir", "--json"],
             "mcp" => ["--state-dir"],
             "decision" => ["--workspace", "--state-dir", "--json", "--finding", "--revision", "--action", "--until"],
             "doctor" => ["--workspace", "--state-dir", "--json"],
@@ -127,6 +129,10 @@ static async Task<int> Run(string[] args)
                     Required("--sources").Split(',', StringSplitOptions.TrimEntries)
                         .ToHashSet(StringComparer.OrdinalIgnoreCase),
                     options.ContainsKey("--approve-metadata"));
+                break;
+            case "preferences":
+                result = options.TryGetValue("--enable-category", out var category)
+                    ? service.EnableCategory(workspace, category) : service.Preferences(workspace);
                 break;
             case "decision":
                 if (!Enum.TryParse<DecisionAction>(Required("--action").Replace("-", ""), true, out var action))

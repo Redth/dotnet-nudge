@@ -99,6 +99,20 @@ public sealed class ProtocolTests
             using (var status = await Call("nudge_status", new() { ["workspace"] = workspace }))
                 Assert.Equal("version-skipped", status.RootElement.GetProperty("findings")[0]
                     .GetProperty("suppression").GetString());
+            using (var mute = await Call("nudge_decide", new()
+                {
+                    ["workspace"] = workspace, ["findingId"] = id,
+                    ["revision"] = revision, ["action"] = "disable-category"
+                }))
+                Assert.Equal("disable-category", mute.RootElement.GetProperty("action").GetString());
+            using (var preferences = await Call("nudge_preferences", new() { ["workspace"] = workspace }))
+                Assert.Equal("sdk", preferences.RootElement.GetProperty("disabledCategories")[0]
+                    .GetProperty("category").GetString());
+            using (var enabled = await Call("nudge_preferences", new()
+                { ["workspace"] = workspace, ["action"] = "enable-category", ["category"] = "sdk" }))
+                Assert.Equal("enable-category", enabled.RootElement.GetProperty("action").GetString());
+            using (var preferences = await Call("nudge_preferences", new() { ["workspace"] = workspace }))
+                Assert.Empty(preferences.RootElement.GetProperty("disabledCategories").EnumerateArray());
             var doctorStart = new ProcessStartInfo(engine ?? "dotnet")
             {
                 RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false

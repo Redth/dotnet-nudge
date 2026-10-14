@@ -55,6 +55,21 @@ public sealed class NudgeService(NudgeState state, string? owner = null, bool cl
         return state.Decide(repository, WorkspaceDiscovery.ScopeId(root), id, revision, action, until);
     }
 
+    public PreferencesReport Preferences(string root)
+    {
+        root = AdmittedPath(root);
+        var (repository, _) = WorkspaceDiscovery.Identities(root);
+        return new(Contract.Version, repository, WorkspaceDiscovery.ScopeId(root),
+            state.DisabledCategories(repository),
+            Status(root).Findings.Where(f => f.Suppression is not null).ToArray());
+    }
+
+    public CategoryPreferenceResult EnableCategory(string root, string category)
+    {
+        var (repository, _) = WorkspaceDiscovery.Identities(AdmittedPath(root));
+        return state.EnableCategory(repository, category);
+    }
+
     public Task<PackageContextReport> PackageContextAsync(string root, string? handle = null,
         CancellationToken token = default) =>
         PackageIntegration.ContextAsync(WorkspaceDiscovery.Discover(AdmittedPath(root)), handle, token);

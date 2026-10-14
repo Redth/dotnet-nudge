@@ -30,13 +30,16 @@ The following tools currently expose versioned JSON as text:
 | `nudge_package_context(workspace, handle?)` | List exact restored-package skill handles or read one matching skill and linked references as inert data. |
 | `nudge_package_assess(workspace, project, framework, packageId, approvedSources, acquisitionApproved, runtimeIdentifier?)` | After explicit approval of every named configured candidate/audit source, read metadata only for one exact restored package scope. |
 | `nudge_decide(workspace, findingId, revision, action, until?)` | Record a revision-bound snooze, exact-version skip, disable-category or enable-category. |
-| `nudge_preferences(workspace, findingId?, revision?, action?)` | Read current suppressions or change a category with current evidence. |
+| `nudge_preferences(workspace, findingId?, revision?, action?, category?)` | Read durable disabled categories and current suppressions; disable with current finding evidence, or re-enable a muted category by name after its finding disappears. |
 | `nudge_trial()` | Returns blocked coverage until the reviewed trial module is integrated; no trial is run. |
 
 `status`, `scan`, `package-context`, and `decision` CLI commands use the same service/state layer.
 `package-assess --workspace PATH --project RELATIVE_PROJECT --framework TFM
 --package ID --sources NAME[,NAME...] --approve-metadata [--rid RID] --json`
 performs the corresponding explicitly approved metadata-only assessment.
+`preferences --workspace PATH [--enable-category NAME] --json` reads durable
+category mutes or reverses one existing mute. Re-enabling a category that is
+not muted returns an error.
 `doctor --workspace PATH --json` reports cached scope coverage without scanning
 and does not infer success from an absent worker or report.
 `hook` registers its host-provided workspace and queues a scan on session

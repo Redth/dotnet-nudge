@@ -31,6 +31,7 @@ scan --workspace PATH [--state-dir PATH] --json
 status --workspace PATH [--state-dir PATH] --json
 package-context --workspace PATH [--handle EXACT_HANDLE] [--state-dir PATH] --json
 package-assess --workspace PATH --project RELATIVE_PROJECT --framework TFM --package ID --sources NAME[,NAME...] --approve-metadata [--rid RID] [--state-dir PATH] --json
+preferences --workspace PATH [--enable-category NAME] [--state-dir PATH] --json
 decision --workspace PATH --finding ID --revision REV --action snooze|skip-version|disable-category|enable-category [--until RFC3339] [--state-dir PATH] --json
 doctor [--workspace PATH] [--state-dir PATH] --json
 hook --host copilot|claude --event session-start|prompt-submit|post-tool-use|session-end [--state-dir PATH]
@@ -83,6 +84,9 @@ FindingStatus(Finding, Eligible, Suppression?)
 StatusReport(SchemaVersion, RepositoryId, WorktreeId, WorkspaceId, ScannedAt?,
              Findings[], Coverage[])
 DecisionResult(SchemaVersion, FindingId, Revision, Action, RecordedAt, Until?)
+CategoryPreference(Category, RecordedAt)
+PreferencesReport(SchemaVersion, RepositoryId, WorkspaceId,
+                  DisabledCategories[], SuppressedFindings[])
 DoctorReport(SchemaVersion, StateDirectory, Workspace?, RepositoryId?,
              WorktreeId?, WorkspaceId?, ReleaseMetadataSource, Note, Coverage?)
 ```

@@ -411,6 +411,24 @@ public sealed class FoundationTests
     }
 
     [Fact]
+    public void MutedCategoryCanBeListedAndReenabledAfterItsFindingDisappears()
+    {
+        using var fixture = new Fixture();
+        using var state = fixture.State();
+        var report = Report(fixture, Finding());
+        state.Save(report);
+        state.Decide(report.Workspace.RepositoryId, report.Workspace.WorkspaceId,
+            "sdk:root", "r1", DecisionAction.DisableCategory, null);
+        state.Save(report with { Findings = [] });
+        using var service = new NudgeService(state);
+        Assert.Equal("sdk", Assert.Single(service.Preferences(fixture.Root).DisabledCategories).Category);
+        Assert.Empty(service.Preferences(fixture.Root).SuppressedFindings);
+        Assert.Equal("enable-category", service.EnableCategory(fixture.Root, "sdk").Action);
+        Assert.Empty(service.Preferences(fixture.Root).DisabledCategories);
+        Assert.Throws<InvalidOperationException>(() => service.EnableCategory(fixture.Root, "sdk"));
+    }
+
+    [Fact]
     public void DecisionsAreRevisionBoundAcrossWorktreesAndLeasesAreAtomic()
     {
         using var fixture = new Fixture();

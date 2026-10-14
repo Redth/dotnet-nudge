@@ -42,6 +42,11 @@ public sealed record StatusReport(int SchemaVersion, string RepositoryId, string
     DateTimeOffset? ScannedAt, IReadOnlyList<FindingStatus> Findings, IReadOnlyList<Coverage> Coverage);
 public sealed record DecisionResult(int SchemaVersion, string FindingId, string Revision,
     DecisionAction Action, DateTimeOffset RecordedAt, DateTimeOffset? Until);
+public sealed record CategoryPreference(string Category, DateTimeOffset RecordedAt);
+public sealed record PreferencesReport(int SchemaVersion, string RepositoryId, string WorkspaceId,
+    IReadOnlyList<CategoryPreference> DisabledCategories, IReadOnlyList<FindingStatus> SuppressedFindings);
+public sealed record CategoryPreferenceResult(int SchemaVersion, string Category, string Action,
+    DateTimeOffset RecordedAt);
 public sealed record DoctorReport(int SchemaVersion, string StateDirectory, string? Workspace,
     string? RepositoryId, string? WorktreeId, string? WorkspaceId, string ReleaseMetadataSource,
     string Note, IReadOnlyList<Coverage>? Coverage = null);

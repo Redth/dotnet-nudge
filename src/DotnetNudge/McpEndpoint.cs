@@ -139,16 +139,20 @@ public sealed class NudgeTools(McpStateDirectory location)
             service.Decide(root, findingId, revision, choice, expiry), Contract.Json)));
     }
 
-    [McpServerTool(Name = "nudge_preferences"), Description("Read or change category preferences using a current finding revision.")]
+    [McpServerTool(Name = "nudge_preferences"), Description("Read category preferences, disable with current finding evidence, or re-enable an already muted category by name.")]
     public async Task<string> Preferences(McpServer server, string workspace, string? findingId = null,
-        string? revision = null, string? action = null, CancellationToken cancellationToken = default)
+        string? revision = null, string? action = null, string? category = null,
+        CancellationToken cancellationToken = default)
     {
         var root = await RootAsync(server, workspace, cancellationToken);
         return await WithServiceAsync(service =>
         {
             if (action is null)
-                return Task.FromResult(JsonSerializer.Serialize(service.Status(root).Findings
-                    .Where(f => f.Suppression is not null), Contract.Json));
+                return Task.FromResult(JsonSerializer.Serialize(service.Preferences(root), Contract.Json));
+            if (action == "enable-category" && category is not null &&
+                findingId is null && revision is null)
+                return Task.FromResult(JsonSerializer.Serialize(service.EnableCategory(root, category),
+                    Contract.Json));
             if (action is not ("disable-category" or "enable-category") ||
                 findingId is null || revision is null)
                 throw new McpException("Changing a category requires action, findingId and current revision.");
