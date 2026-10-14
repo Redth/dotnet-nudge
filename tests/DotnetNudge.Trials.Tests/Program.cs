@@ -372,15 +372,17 @@ async Task ActiveCancel()
     var f = await Fixture.Create("active-cancel");
     var script = Path.Combine(f.Baseline, "dotnet");
     File.WriteAllText(script, File.ReadAllText(script).Replace(
-        "*) echo", "*) sleep 90; echo"));
+        "*) echo", "*) printf running > \"$DOTNET_CLI_HOME/active-command\"; sleep 90; echo"));
     var plan = f.Plan();
     f.Runner.Propose(plan);
     f.Runner.Approve(plan.Id, 1);
     var running = f.Runner.ExecuteAsync(plan.Id, 1);
-    var deadline = DateTime.UtcNow.AddSeconds(10);
-    while (f.Runner.Status(plan.Id).Phase != TrialPhase.Baseline && DateTime.UtcNow < deadline)
+    var marker = Path.Combine(plan.TrialRoot, plan.Id, "home", "active-command");
+    var deadline = DateTime.UtcNow.AddSeconds(15);
+    while (!File.Exists(marker) && DateTime.UtcNow < deadline)
         await Task.Delay(20);
-    Check(f.Runner.Status(plan.Id).Phase == TrialPhase.Baseline, "baseline never started");
+    Check(File.Exists(marker) && f.Runner.Status(plan.Id).Phase == TrialPhase.Baseline,
+        "baseline process never started");
     f.Runner.Cancel(plan.Id);
     var result = await running;
     Check(result.Phase == TrialPhase.Cancelled, "active cancellation not persisted");
