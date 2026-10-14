@@ -40,7 +40,11 @@ public sealed class ProtocolTests
                     ? """{"releases":[{"sdk":{"version":"11.0.100-rc.1"}}]}"""
                     : JsonSerializer.Serialize(new
                     {
-                        releases = new[] { new { security = Security, sdk = new { version = "10.0.113" } } }
+                        releases = new[]
+                        {
+                            new { security = Security, sdk = new { version = "10.0.102" } },
+                            new { security = false, sdk = new { version = "10.0.103" } }
+                        }
                     });
             return Task.FromResult((body, Assessment.Confirmed));
         }
@@ -383,6 +387,7 @@ public sealed class ProtocolTests
             var (findings, coverage) = await SdkServicing.CheckAsync(inventory, metadata);
             var servicing = Assert.Single(findings, f => f.Kind == "sdk-servicing");
             Assert.Equal(Priority.High, servicing.Priority);
+            Assert.Equal("10.0.103", servicing.Candidate);
             Assert.Equal("official-security-release", Assert.Single(servicing.Evidence).Type);
             Assert.Contains(coverage, c => c.Check == "sdk:global.json" &&
                 c.Detail.Contains("CVE applicability", StringComparison.Ordinal));
@@ -953,8 +958,63 @@ public sealed class ProtocolTests
                 string.Join("; ", analyzed.Coverage.Where(c => c.Check.StartsWith("runtime:", StringComparison.Ordinal))
                     .Select(c => c.Detail)));
             Assert.Contains(analyzed.Findings, f => f.Kind == "deployment-runtime-security-servicing");
+            Assert.Contains(analyzed.Coverage, c => c.Check == "runtime:10.0" &&
+                c.Detail.Contains("SelfContained deployment evidence analyzed", StringComparison.Ordinal));
             Assert.Contains(analyzed.Coverage, c => c.Check == "global-json:global.json");
             Assert.NotEmpty(analyzed.Runtimes);
+            var containerBundle = bundle with { Deployment = new(
+                Toolchain.RuntimeDeploymentKind.Container,
+                DeclaredContainerRuntimeVersions: new Dictionary<string, string>
+                { ["Microsoft.NETCore.App"] = "10.0.1" }, Evidence: evidence) };
+            File.WriteAllText(evidenceFile, JsonSerializer.Serialize(containerBundle, Contract.Json));
+            var container = await ToolchainIntegration.ScanAsync(WorkspaceDiscovery.Discover(root),
+                observed, new ReleaseFixture(), CancellationToken.None);
+            Assert.Contains(container.Coverage, c => c.Check == "runtime:10.0" &&
+                c.Detail.Contains("Container deployment evidence analyzed", StringComparison.Ordinal));
+            File.Delete(evidenceFile);
+            var unknown = await ToolchainIntegration.ScanAsync(WorkspaceDiscovery.Discover(root),
+                observed, new ReleaseFixture(), CancellationToken.None);
+            Assert.Contains(unknown.Coverage, c => c.Check == "runtime:10.0" &&
+                c.Detail.Contains("Deployment runtime remains unknown", StringComparison.Ordinal));
+            var valid = JsonNode.Parse(JsonSerializer.Serialize(bundle, Contract.Json))!;
+            foreach (var (path, label) in new[]
+            {
+                ("workload.availableSets", "workload.availableSets"),
+                ("workload.tupleContext.targetFrameworks", "workload.tupleContext"),
+                ("workload.installedInventory.evidence", "workload.installedInventory.evidence"),
+                ("hostInventory.windowsSdkVersions", "hostInventory.windowsSdkVersions"),
+                ("deployment.embeddedRuntimeVersions", "deployment.embeddedRuntimeVersions")
+            })
+            {
+                var malformed = valid.DeepClone();
+                var segments = path.Split('.');
+                JsonNode parent = malformed;
+                foreach (var segment in segments.SkipLast(1)) parent = parent[segment]!;
+                parent[segments[^1]] = null;
+                File.WriteAllText(evidenceFile, malformed.ToJsonString());
+                var blocked = await ToolchainIntegration.ScanAsync(WorkspaceDiscovery.Discover(root),
+                    observed, new ReleaseFixture(), CancellationToken.None);
+                Assert.Contains(blocked.Coverage, c => c.Check == "toolchain-evidence" &&
+                    c.Assessment == Assessment.Blocked &&
+                    c.Detail.Contains(label, StringComparison.Ordinal));
+            }
+            var badDependency = valid.DeepClone();
+            badDependency["workload"]!["dependencyDocumentsByWorkload"]!["microsoft.net.sdk.android"] = null;
+            File.WriteAllText(evidenceFile, badDependency.ToJsonString());
+            var missingDocument = await ToolchainIntegration.ScanAsync(WorkspaceDiscovery.Discover(root),
+                observed, new ReleaseFixture(), CancellationToken.None);
+            Assert.Contains(missingDocument.Coverage, c => c.Check == "toolchain-evidence" &&
+                c.Assessment == Assessment.Blocked &&
+                c.Detail.Contains("dependencyDocumentsByWorkload", StringComparison.Ordinal));
+            var badVersion = valid.DeepClone();
+            badVersion["deployment"]!["embeddedRuntimeVersions"]!["Microsoft.NETCore.App"] = null;
+            File.WriteAllText(evidenceFile, badVersion.ToJsonString());
+            var missingVersion = await ToolchainIntegration.ScanAsync(WorkspaceDiscovery.Discover(root),
+                observed, new ReleaseFixture(), CancellationToken.None);
+            Assert.Contains(missingVersion.Coverage, c => c.Check == "toolchain-evidence" &&
+                c.Assessment == Assessment.Blocked &&
+                c.Detail.Contains("embeddedRuntimeVersions", StringComparison.Ordinal));
+            File.WriteAllText(evidenceFile, JsonSerializer.Serialize(bundle, Contract.Json));
             using var state = new NudgeState(Path.Combine(root, "state"));
             var scan = await new NudgeScanner(new ReleaseFixture()).ScanAsync(root,
                 state: state, probeInstalled: false);
@@ -969,7 +1029,7 @@ public sealed class ProtocolTests
     }
 
     [Fact]
-    public async Task McpApprovedIsolatedTrialKeepsOriginalAndRefusesDirtyCleanup()
+    public async Task McpRefusesApprovalButExecutesHumanApprovedIsolatedTrial()
     {
         if (OperatingSystem.IsWindows()) return;
         var root = Path.Combine(Environment.GetEnvironmentVariable("NUDGE_INTEGRATION_TEST_ROOT")
@@ -1077,8 +1137,38 @@ public sealed class ProtocolTests
                     Assert.Equal("proposed", proposed.RootElement.GetProperty("phase").GetString());
                     Assert.False(proposed.RootElement.TryGetProperty("ownerToken", out _));
                 }
-                using (var approved = await Trial("approve", "integration", 1))
-                    Assert.Equal("approved", approved.RootElement.GetProperty("phase").GetString());
+                var denied = await client.CallToolAsync("nudge_trial", new Dictionary<string, object?>
+                    { ["workspace"] = repo, ["operation"] = "approve", ["id"] = "integration",
+                        ["revision"] = 1 }, cancellationToken: timeout.Token);
+                Assert.True(denied.IsError);
+                using (var stillProposed = await Trial("status", "integration"))
+                    Assert.Equal("proposed", stillProposed.RootElement.GetProperty("phase").GetString());
+                var approvalStart = new ProcessStartInfo(engine ?? "dotnet")
+                {
+                    RedirectStandardInput = true, RedirectStandardOutput = true,
+                    RedirectStandardError = true, UseShellExecute = false, WorkingDirectory = root
+                };
+                if (engine is null)
+                    approvalStart.ArgumentList.Add(typeof(DotnetNudge.McpEndpoint).Assembly.Location);
+                foreach (var argument in new[] { "trial", "approve", "--workspace", repo,
+                    "--state-dir", stateDir, "--id", "integration", "--revision", "1", "--json" })
+                    approvalStart.ArgumentList.Add(argument);
+                using (var approval = Process.Start(approvalStart)!)
+                {
+                    var output = approval.StandardOutput.ReadToEndAsync();
+                    var error = approval.StandardError.ReadToEndAsync();
+                    await approval.WaitForExitAsync(timeout.Token);
+                    Assert.Equal(2, approval.ExitCode);
+                    Assert.Contains("interactive terminal", await error);
+                    using var rejected = JsonDocument.Parse(await output);
+                    Assert.Equal(1, rejected.RootElement.GetProperty("schemaVersion").GetInt32());
+                }
+                var trustedRunner = new TrialRunner(new TrialStore(trialRoot));
+                Assert.Throws<TrialException>(() => trustedRunner.Approve("integration", 1,
+                    new string('0', 64)));
+                var approvedRecord = trustedRunner.Approve("integration", 1,
+                    TrialRunner.Digest(plan));
+                Assert.Equal(TrialPhase.Approved, approvedRecord.Phase);
                 using (var executed = await Trial("execute", "integration", 1))
                 {
                     Assert.True(executed.RootElement.GetProperty("phase").GetString() == "ready-for-review",

@@ -32,7 +32,7 @@ The following tools currently expose versioned JSON as text:
 | `nudge_decide(workspace, findingId, revision, action, until?)` | Record a revision-bound snooze, exact-version skip, disable-category or enable-category. |
 | `nudge_preferences(workspace, findingId?, revision?, action?, category?)` | Read durable disabled categories and current suppressions; disable with current finding evidence, or re-enable a muted category by name after its finding disappears. |
 | `nudge_toolchains(workspace)` | Read scoped workload/host evidence and observed local runtimes; report separate deployment-runtime coverage without installing tools. |
-| `nudge_trial(workspace, operation, id?, revision?, planJson?)` | `root`, `propose`, `approve`, `execute`, `status`, `cancel`, or `cleanup` an exact approved trial. `propose` takes the complete JSON plan; `approve` and `execute` require its revision. |
+| `nudge_trial(workspace, operation, id?, revision?, planJson?)` | `root`, `propose`, `execute`, `status`, `cancel`, or `cleanup` an exact approved trial. `propose` takes the complete JSON plan; MCP `approve` is refused because a model tool call is not human consent. `execute` requires a previously approved revision and plan digest. |
 
 `status`, `scan`, `package-context`, and `decision` CLI commands use the same service/state layer.
 `package-assess --workspace PATH --project RELATIVE_PROJECT --framework TFM
@@ -46,8 +46,13 @@ and observations as `nudge_toolchains`. `trial root|propose|approve|execute|stat
 --workspace PATH [--plan ABSOLUTE_FILE] [--id ID] [--revision N] --json`
 uses the engine-owned `<state-dir>/trials` directory. First obtain that root,
 then supply a complete plan as described in `docs/upgrade-trials.md`. Proposing
-is not approval: only an explicit human approval of the exact revision permits
-execution. CLI Ctrl-C cancels its own active execution; cancellation from a
+is not approval: a human must use `trial approve --workspace PATH --id ID
+--revision N --json` **in a local interactive terminal**. The command displays
+the persisted complete plan, workspace, revision and SHA-256 digest, then
+requires the exact `approve ID N DIGEST` response; redirected/noninteractive
+invocations are rejected. The digest is rechecked under the trial lease before
+approval. Neither MCP tools nor an agent's plan text can approve a trial.
+CLI Ctrl-C cancels its own active execution; cancellation from a
 separate CLI process cannot control that runner, whereas calls on one active
 MCP server share its runner. Status does not expose the ownership token.
 `doctor --workspace PATH --json` reports cached scope coverage without scanning
@@ -123,7 +128,8 @@ Dirty trial worktrees refuse cleanup. Git worktrees are **not an OS sandbox**:
 MSBuild targets and tests may write outside them, so run only trusted code or
 provide an independent sandbox. Windows trial execution and platform workload
 installers are unsupported. MCP subprocess fixtures verify the protocol,
-scoped scans, decisions, offline evidence and an approved trial; they do not
+scoped scans, decisions, offline evidence, refusal of MCP approval, and
+execution after a test-harness-approved exact trial; they do not
 certify host conversational delivery or arbitrary untrusted build isolation.
 
 Independent macOS headless Copilot CLI 1.0.98-2 acceptance used an isolated

@@ -222,7 +222,12 @@ public static class SdkServicing
                     }
                     var subject = $"sdk:{WorkspaceDiscovery.SdkScopeKey(workspace.Root, declaration.Scope)}:" +
                         $"{channel}:{FeatureBand(pinned)}";
-                    var securityRelease = securityVersions.Contains(candidate.ToNormalizedString());
+                    var securityRelease = available.Any(version =>
+                        version > pinned && version <= candidate &&
+                        version.Major == pinned.Major && version.Minor == pinned.Minor &&
+                        FeatureBand(version) == FeatureBand(pinned) &&
+                        (declaration.AllowPrerelease == true || !version.IsPrerelease) &&
+                        securityVersions.Contains(version.ToNormalizedString()));
                     var revision = Convert.ToHexString(SHA256.HashData(
                         Encoding.UTF8.GetBytes($"{subject}|{candidate.ToNormalizedString()}|{securityRelease}")))
                         .ToLowerInvariant()[..16];
@@ -241,7 +246,7 @@ public static class SdkServicing
                         indexFreshness == Assessment.Stale || result.Freshness == Assessment.Stale
                             ? Assessment.Stale : Assessment.Partial,
                         (securityRelease
-                            ? "Candidate SDK is listed in a security release; CVE applicability to this project is not established. "
+                            ? "The SDK upgrade path crosses an official security release; CVE applicability to this project is not established. "
                             : "A newer SDK exists in the declared feature band. ") +
                         "Review installed/effective probe coverage separately. " +
                         $"Declared policy: rollForward={declaration.RollForward ?? "(default)"}, " +

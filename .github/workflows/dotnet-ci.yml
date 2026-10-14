@@ -52,4 +52,4 @@ jobs:
           NUDGE_INTEGRATION_ENGINE_PATH: ${{ github.workspace }}/publish/${{ matrix.executable }}
           NUDGE_INTEGRATION_ENGINE_RID: ${{ matrix.rid }}
           NUDGE_INTEGRATION_TEST_ROOT: ${{ runner.temp }}
-        run: dotnet test tests/DotnetNudge.Integration.Tests/DotnetNudge.Integration.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~ChildProcessInitializesListsToolsScansAndDecides|FullyQualifiedName~McpApprovedIsolatedTrialKeepsOriginalAndRefusesDirtyCleanup"
+        run: dotnet test tests/DotnetNudge.Integration.Tests/DotnetNudge.Integration.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~ChildProcessInitializesListsToolsScansAndDecides|FullyQualifiedName~McpRefusesApprovalButExecutesHumanApprovedIsolatedTrial"

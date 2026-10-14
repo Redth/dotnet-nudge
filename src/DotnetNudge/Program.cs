@@ -170,7 +170,7 @@ static async Task<int> Run(string[] args)
                 {
                     "root" => new { schemaVersion = Contract.Version, trialRoot = service.TrialRoot },
                     "propose" => service.ProposeTrial(workspace, ReadPlan(Required("--plan"))),
-                    "approve" => service.ApproveTrial(workspace, Required("--id"), Revision()),
+                    "approve" => ConfirmTrialApproval(service, workspace, Required("--id"), Revision()),
                     "execute" => await Execute(),
                     "status" => service.TrialStatus(workspace, Required("--id")),
                     "cancel" => service.CancelTrial(workspace, Required("--id")),
@@ -224,5 +224,25 @@ static async Task<int> Run(string[] args)
             Path.GetDirectoryName(path)!, Path.GetFileName(path), 1024 * 1024);
         return JsonSerializer.Deserialize<TrialPlan>(text, Contract.Json)
             ?? throw new InvalidDataException("Trial plan cannot be null.");
+    }
+
+    static TrialStatusReport ConfirmTrialApproval(NudgeService service, string workspace, string id,
+        int revision)
+    {
+        if (Console.IsInputRedirected || Console.IsOutputRedirected || Console.IsErrorRedirected)
+            throw new InvalidOperationException(
+                "Trial approval requires a local interactive terminal; redirected/noninteractive agents cannot approve.");
+        var status = service.TrialStatus(workspace, id);
+        if (status.Phase != "proposed" || status.Revision != revision)
+            throw new InvalidOperationException("Trial is no longer proposed at the requested revision.");
+        var digest = TrialRunner.Digest(status.Plan);
+        Console.Error.WriteLine(JsonSerializer.Serialize(status.Plan,
+            new JsonSerializerOptions(Contract.Json) { WriteIndented = true }));
+        Console.Error.WriteLine($"Workspace: {workspace}\nPlan revision: {revision}\nPlan SHA-256: {digest}");
+        Console.Error.Write($"To approve execution of the displayed plan, type: approve {id} {revision} {digest}\n> ");
+        var input = Console.ReadLine();
+        if (input != $"approve {id} {revision} {digest}")
+            throw new InvalidOperationException("Trial approval was not confirmed; no approval recorded.");
+        return service.ApproveTrial(workspace, id, revision, digest);
     }
 }

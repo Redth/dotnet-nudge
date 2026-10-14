@@ -45,10 +45,10 @@ public sealed class TrialIntegration(NudgeState state, TrialRunner? runner = nul
         return Status(trials.Propose(plan));
     }
 
-    public TrialStatusReport Approve(string workspace, string id, int revision)
+    public TrialStatusReport Approve(string workspace, string id, int revision, string expectedPlanDigest)
     {
         Existing(workspace, id);
-        return Status(trials.Approve(id, revision));
+        return Status(trials.Approve(id, revision, expectedPlanDigest));
     }
 
     public async Task<TrialStatusReport> ExecuteAsync(string workspace, string id, int revision,

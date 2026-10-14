@@ -72,6 +72,7 @@ public static class ToolchainIntegration
                 var raw = SafeMetadataReader.ReadFile(inventory.Root, BundlePath, 4 * 1024 * 1024);
                 bundle = JsonSerializer.Deserialize<ToolchainEvidenceBundle>(raw, BundleJson)
                     ?? throw new InvalidDataException("Toolchain evidence bundle cannot be null.");
+                Validate(bundle);
                 if (bundle.Workload is not null)
                 {
                     var effective = observed?.EffectiveSdks.GetValueOrDefault(".");
@@ -133,6 +134,7 @@ public static class ToolchainIntegration
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException
                 or JsonException or PlatformNotSupportedException or NotSupportedException)
             {
+                bundle = null;
                 coverage.Add(new("toolchain-evidence", Assessment.Blocked,
                     $"Scoped metadata could not be read: {Bounded(ex.Message)}"));
             }
@@ -201,8 +203,15 @@ public static class ToolchainIntegration
                         new FreshnessCriteria(DateTimeOffset.UtcNow, TimeSpan.FromDays(7)),
                         localEvidence));
                     runtimes.Add(result);
+                    var deploymentDetail = result.Value?.DeploymentFrameworks.Count > 0
+                        ? $"Explicit {deployment.Kind} deployment evidence analyzed for " +
+                          $"{result.Value.DeploymentFrameworks.Count} framework(s)."
+                        : deployment.Kind == RuntimeDeploymentKind.Unknown
+                            ? "Deployment runtime remains unknown."
+                            : $"Explicit {deployment.Kind} deployment has no analyzable framework evidence.";
                     coverage.Add(new("runtime:" + channel, Map(result.Assessment),
-                        Detail(result.Diagnostics, "Local installed frameworks analyzed; deployment runtime remains unknown.")));
+                        Detail(result.Diagnostics, "Local installed frameworks analyzed.") +
+                        " " + deploymentDetail));
                     if (result.Value is null) continue;
                     foreach (var local in result.Value.LocalFrameworks.Where(f =>
                         f.SecurityServicingVersion is not null &&
@@ -263,6 +272,116 @@ public static class ToolchainIntegration
     static string Detail(IReadOnlyList<Diagnostic> diagnostics, string fallback) =>
         diagnostics.Count == 0 ? fallback :
             string.Join("; ", diagnostics.Take(4).Select(d => Bounded(d.Message)));
+
+    static void Validate(ToolchainEvidenceBundle bundle)
+    {
+        static void Require(bool valid, string path)
+        {
+            if (!valid) throw new InvalidDataException($"Toolchain evidence requires {path}.");
+        }
+        static void Evidence(ToolEvidence? value, string path) =>
+            Require(value is not null && !string.IsNullOrWhiteSpace(value.Source), path);
+        static void Document(VersionedJsonDocument? value, string path)
+        {
+            Require(value is not null && value.Json is not null, path);
+            Evidence(value!.Evidence, path + ".evidence");
+        }
+        static void Versions(IReadOnlyDictionary<string, string>? values, string path)
+        {
+            Require(values is not null && values.All(pair =>
+                !string.IsNullOrWhiteSpace(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value)), path);
+        }
+        static void Requirements(IReadOnlyDictionary<string, VersionRequirement>? values, string path)
+        {
+            Require(values is not null && values.All(pair =>
+                !string.IsNullOrWhiteSpace(pair.Key) && pair.Value is not null &&
+                !string.IsNullOrWhiteSpace(pair.Value.Range)), path);
+            foreach (var item in values!.Values)
+                if (item.Evidence is not null) Evidence(item.Evidence, path + ".evidence");
+        }
+        if (bundle.Workload is { } workload)
+        {
+            Require(!string.IsNullOrWhiteSpace(workload.SdkVersion), "workload.sdkVersion");
+            Require(workload.AvailableSets is not null, "workload.availableSets");
+            foreach (var set in workload.AvailableSets!)
+            {
+                Require(set is not null && !string.IsNullOrWhiteSpace(set.SdkFeatureBand) &&
+                    !string.IsNullOrWhiteSpace(set.UserFacingVersion), "workload.availableSets[]");
+                Document(set!.WorkloadSetManifest, "workload.availableSets[].workloadSetManifest");
+            }
+            Require(workload.SelectedWorkloads is not null &&
+                workload.SelectedWorkloads.All(value => !string.IsNullOrWhiteSpace(value)),
+                "workload.selectedWorkloads");
+            Require(workload.DependencyDocumentsByWorkload is not null,
+                "workload.dependencyDocumentsByWorkload");
+            foreach (var (key, value) in workload.DependencyDocumentsByWorkload!)
+            {
+                Require(!string.IsNullOrWhiteSpace(key), "workload.dependencyDocumentsByWorkload key");
+                Document(value, $"workload.dependencyDocumentsByWorkload[{key}]");
+            }
+            Require(workload.TupleContext is not null &&
+                workload.TupleContext.MauiPackageVersions is not null &&
+                workload.TupleContext.TargetFrameworks is not null, "workload.tupleContext");
+            var tuple = workload.TupleContext!;
+            Require(tuple.MauiPackageVersions?.All(value => value is not null) == true &&
+                tuple.TargetFrameworks?.All(value => value is not null) == true,
+                "workload.tupleContext entries");
+            if (tuple.AndroidTargets is not null)
+                Require(tuple.AndroidTargets.All(value => value is not null &&
+                    value.TargetFramework is not null), "workload.tupleContext.androidTargets");
+            if (tuple.WindowsSdkRequirementsByWorkload is not null)
+                Requirements(tuple.WindowsSdkRequirementsByWorkload,
+                    "workload.tupleContext.windowsSdkRequirementsByWorkload");
+            if (tuple.Evidence is not null)
+                foreach (var item in tuple.Evidence) Evidence(item, "workload.tupleContext.evidence[]");
+            Require(workload.Freshness is not null, "workload.freshness");
+            if (workload.InstalledInventory is { } installed)
+            {
+                Require(installed.Manifests is not null &&
+                    installed.Manifests.All(pair => !string.IsNullOrWhiteSpace(pair.Key) &&
+                        pair.Value is not null && !string.IsNullOrWhiteSpace(pair.Value.Version) &&
+                        !string.IsNullOrWhiteSpace(pair.Value.SdkFeatureBand)),
+                    "workload.installedInventory.manifests");
+                Require(installed.Workloads is not null &&
+                    installed.Workloads.All(value => !string.IsNullOrWhiteSpace(value)),
+                    "workload.installedInventory.workloads");
+                Evidence(installed.Evidence, "workload.installedInventory.evidence");
+            }
+        }
+        if (bundle.HostInventory is { } host)
+        {
+            Evidence(host.Evidence, "hostInventory.evidence");
+            Versions(host.WindowsSdkVersions, "hostInventory.windowsSdkVersions");
+            Versions(host.PlatformSdkVersions, "hostInventory.platformSdkVersions");
+            if (host.Android is { } android)
+                Require(android.InstalledPlatforms is not null &&
+                    android.InstalledBuildTools is not null && android.InstalledPackages is not null,
+                    "hostInventory.android");
+        }
+        if (bundle.Targets is not null)
+            foreach (var target in bundle.Targets)
+            {
+                Require(target is not null && !string.IsNullOrWhiteSpace(target.Target), "targets[]");
+                if (target!.Evidence is not null) Evidence(target.Evidence, "targets[].evidence");
+            }
+        if (bundle.Suggestions is { } suggestions)
+            Versions(suggestions.BuildProperties, "suggestions.buildProperties");
+        if (bundle.MacOsRequirementsByWorkload is not null)
+            Requirements(bundle.MacOsRequirementsByWorkload, "macOsRequirementsByWorkload");
+        if (bundle.Deployment is { } deployment)
+        {
+            if (deployment.Evidence is not null) Evidence(deployment.Evidence, "deployment.evidence");
+            if (deployment.Kind == RuntimeDeploymentKind.Container)
+                Versions(deployment.DeclaredContainerRuntimeVersions,
+                    "deployment.declaredContainerRuntimeVersions");
+            if (deployment.Kind == RuntimeDeploymentKind.SelfContained)
+                Versions(deployment.EmbeddedRuntimeVersions, "deployment.embeddedRuntimeVersions");
+            if (deployment.DeclaredContainerRuntimeVersions is not null)
+                Versions(deployment.DeclaredContainerRuntimeVersions, "deployment.declaredContainerRuntimeVersions");
+            if (deployment.EmbeddedRuntimeVersions is not null)
+                Versions(deployment.EmbeddedRuntimeVersions, "deployment.embeddedRuntimeVersions");
+        }
+    }
     static string Bounded(string value) => value.Length > 300 ? value[..300] : value;
     static string Revision(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));

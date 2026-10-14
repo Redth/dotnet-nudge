@@ -124,7 +124,9 @@ Offline workload/host analysis uses optional scoped `.dotnet-nudge/toolchains.js
 evidence; `toolchains --workspace PATH --json` inspects it and locally observed
 runtimes. `trial root|propose|approve|execute|status|cancel|cleanup --workspace PATH
 [--plan ABSOLUTE_FILE] [--id ID] [--revision N] --json` manages approved
-baseline/candidate worktrees. See `docs/integration.md` and
+baseline/candidate worktrees. `trial approve` requires direct human terminal
+review and exact digest confirmation; MCP approval and redirected CLI
+approval fail. See `docs/integration.md` and
 `docs/upgrade-trials.md` for approval, isolation and platform limits. Package
 feed checks remain partial without mapped source and complete audit evidence;
 restored graphs are observed without changing projects. XML project/config inventory is declared

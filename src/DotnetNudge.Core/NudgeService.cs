@@ -108,8 +108,9 @@ public sealed class NudgeService(NudgeState state, string? owner = null, bool cl
     public string TrialRoot => trials.Root;
     public TrialStatusReport ProposeTrial(string root, TrialPlan plan) =>
         trials.Propose(AdmittedPath(root), plan);
-    public TrialStatusReport ApproveTrial(string root, string id, int revision) =>
-        trials.Approve(AdmittedPath(root), id, revision);
+    public TrialStatusReport ApproveTrial(string root, string id, int revision,
+        string expectedPlanDigest) =>
+        trials.Approve(AdmittedPath(root), id, revision, expectedPlanDigest);
     public Task<TrialStatusReport> ExecuteTrialAsync(string root, string id, int revision,
         CancellationToken token = default) =>
         trials.ExecuteAsync(AdmittedPath(root), id, revision, token);

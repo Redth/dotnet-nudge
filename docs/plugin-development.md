@@ -154,7 +154,8 @@ decision --workspace PATH --finding ID --revision REV --action snooze|skip-versi
 preference and must not run until the user approves its exact workspace,
 finding ID, revision, action, and optional expiry. `mcp [--state-dir PATH]`
 serves the local stdio endpoint; see [integration](integration.md). Trials
-require an exact approved plan and trusted project code, not an OS sandbox;
+require an exact approved plan confirmed by a human in a local interactive CLI
+(`nudge_trial` cannot approve), and trusted project code, not an OS sandbox;
 see [trial limits](upgrade-trials.md). None of these
 commands are executed by the hook launchers.
 

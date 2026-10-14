@@ -177,7 +177,7 @@ public sealed class NudgeTools(McpStateDirectory location)
         });
     }
 
-    [McpServerTool(Name = "nudge_trial"), Description("Read or manage an isolated trial. Propose requires a complete exact plan; approve requires explicit human approval of its exact revision; execute requires that persisted approval. No source checkout, global SDK, push or PR is changed.")]
+    [McpServerTool(Name = "nudge_trial"), Description("Propose/read a trial and execute only an already approved exact plan. Approval is unavailable via MCP; a human must confirm the persisted plan in an interactive CLI. No source checkout, global SDK, push or PR is changed.")]
     public async Task<string> Trial(McpServer server, string workspace, string operation,
         string? id = null, int? revision = null, string? planJson = null,
         CancellationToken cancellationToken = default)
@@ -198,7 +198,8 @@ public sealed class NudgeTools(McpStateDirectory location)
             {
                 "root" => new { schemaVersion = Contract.Version, trialRoot = service.TrialRoot },
                 "propose" => service.ProposeTrial(root, Plan()),
-                "approve" => service.ApproveTrial(root, Id(), Revision()),
+                "approve" => throw new McpException(
+                    "MCP cannot approve trial execution. A human must review the exact persisted plan and confirm it in an interactive dotnet-nudge trial approve CLI."),
                 "execute" => await service.ExecuteTrialAsync(root, Id(), Revision(), cancellationToken),
                 "status" => service.TrialStatus(root, Id()),
                 "cancel" => service.CancelTrial(root, Id()),

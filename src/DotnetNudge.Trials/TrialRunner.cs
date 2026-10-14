@@ -40,12 +40,14 @@ public sealed class TrialRunner(TrialStore store, TrialGit? git = null, TrialSdk
         return record;
     }
 
-    public TrialRecord Approve(string id, int exactRevision)
+    public TrialRecord Approve(string id, int exactRevision, string? expectedPlanDigest = null)
     {
         using var lease = store.Lease(id);
         var record = store.Load(id);
         if (record.Phase != TrialPhase.Proposed || record.Plan.Revision != exactRevision)
             throw new TrialException("Approval must match the current proposed revision");
+        if (expectedPlanDigest is not null && expectedPlanDigest != Digest(record.Plan))
+            throw new TrialException("Approval must match the exact persisted plan digest");
         record.ApprovedRevision = exactRevision;
         record.ApprovedPlanDigest = Digest(record.Plan);
         Move(record, TrialPhase.Approved);
@@ -503,6 +505,6 @@ public sealed class TrialRunner(TrialStore store, TrialGit? git = null, TrialSdk
         }
     }
 
-    private static string Digest(TrialPlan plan) =>
+    public static string Digest(TrialPlan plan) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(plan))));
 }
