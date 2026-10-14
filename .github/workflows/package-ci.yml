@@ -1,0 +1,23 @@
+name: Package intelligence
+
+on:
+  push:
+    paths:
+      - 'src/DotnetNudge.Packages/**'
+      - 'tests/DotnetNudge.Packages.Tests/**'
+      - '.github/workflows/package-ci.yml'
+  pull_request:
+    paths:
+      - 'src/DotnetNudge.Packages/**'
+      - 'tests/DotnetNudge.Packages.Tests/**'
+      - '.github/workflows/package-ci.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet test tests/DotnetNudge.Packages.Tests/DotnetNudge.Packages.Tests.csproj --configuration Release --nologo
