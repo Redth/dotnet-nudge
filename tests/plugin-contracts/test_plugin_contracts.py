@@ -548,18 +548,33 @@ class LauncherTests(unittest.TestCase):
         external_engine_dir.mkdir(parents=True)
         shutil.copy2(sys.executable, external_engine_dir / "dotnet-nudge.exe")
         version_link = engine_root / "1.2.3"
-        command = f'mklink /J "{version_link}" "{external_version}"'
+        powershell = powershell_executable()
+        if not powershell:
+            self.fail("PowerShell is required to create a Windows directory junction.")
+        env = os.environ.copy()
+        env["NUDGE_JUNCTION_LINK"] = str(version_link)
+        env["NUDGE_JUNCTION_TARGET"] = str(external_version)
         result = subprocess.run(
-            ["cmd.exe", "/c", command],
+            [
+                powershell,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "New-Item -ItemType Junction -Path $env:NUDGE_JUNCTION_LINK "
+                "-Target $env:NUDGE_JUNCTION_TARGET | Out-Null",
+            ],
+            env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
         )
-        if result.returncode != 0:
-            self.skipTest(
-                f"Could not create a Windows directory junction: "
-                f"{result.stderr.decode(errors='replace')}"
-            )
+        self.assertEqual(
+            result.returncode,
+            0,
+            result.stdout.decode(errors="replace") + result.stderr.decode(errors="replace"),
+        )
+        self.assertTrue(version_link.is_dir(), "PowerShell did not create the junction.")
         (engine_root / "current").write_text(
             f"1.2.3/{expected_rid()}\n",
             encoding="utf-8",
