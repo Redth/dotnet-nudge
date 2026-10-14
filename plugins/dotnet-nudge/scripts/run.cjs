@@ -17,7 +17,7 @@ const releaseBase = `https://github.com/${repository}/releases`;
 const supportedRids = ["linux-x64", "linux-arm64", "osx-x64", "osx-arm64", "win-x64", "win-arm64"];
 const versionPattern = /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/;
 const digestPattern = /^[a-f0-9]{64}$/;
-const setupDiagnostic = "dotnet-nudge: runtime setup is required. MCP will automatically download and verify the engine on first use; hooks never download or run a missing engine.";
+const setupDiagnostic = "dotnet-nudge: runtime setup or update is required. MCP will automatically download and verify a compatible engine; hooks never download or run a missing or outdated managed engine.";
 
 function currentRid() {
     const system = { darwin: "osx", linux: "linux", win32: "win" }[process.platform];
@@ -90,26 +90,58 @@ function installedEngine(root) {
     return candidate;
 }
 
-function resolveEngine(env = process.env) {
+function resolveEngineSelection(env = process.env) {
     if (env.NUDGE_ENGINE_PATH) {
         const explicit = path.resolve(env.NUDGE_ENGINE_PATH);
         if (!executable(explicit)) throw new Error(`NUDGE_ENGINE_PATH is not an executable file: ${explicit}`);
-        return explicit;
+        return { executable: explicit };
     }
     const name = process.platform === "win32" ? "dotnet-nudge.exe" : "dotnet-nudge";
     const bundled = path.join(pluginRoot, "bin", name);
-    if (regularPath(bundled) && executable(bundled)) return bundled;
+    if (regularPath(bundled) && executable(bundled)) return { executable: bundled };
     const roots = [dataDir(env), defaultDataDir(env),
         env.COPILOT_PLUGIN_DATA, env.CLAUDE_PLUGIN_DATA].filter(Boolean);
     for (const root of new Set(roots)) {
         const installed = installedEngine(path.resolve(root));
-        if (installed) return installed;
+        if (installed) return {
+            executable: installed, root: path.resolve(root),
+            version: path.basename(path.dirname(path.dirname(installed)))
+        };
     }
     for (const directory of (env.PATH || "").split(path.delimiter).filter(Boolean)) {
         const candidate = path.join(directory, name);
-        if (path.isAbsolute(candidate) && executable(candidate)) return candidate;
+        if (path.isAbsolute(candidate) && executable(candidate)) return { executable: candidate };
     }
     return null;
+}
+
+function resolveEngine(env = process.env) {
+    return resolveEngineSelection(env)?.executable ?? null;
+}
+
+function minimumEngineVersion() {
+    const manifest = JSON.parse(fs.readFileSync(path.join(pluginRoot, "runtime-manifest.json"), "utf8"));
+    if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(manifest.minimumVersion)) {
+        throw new Error("Plugin minimum engine version must be an exact stable version.");
+    }
+    return manifest.minimumVersion;
+}
+
+function meetsMinimum(version, minimum) {
+    const match = version.match(/^(\d+)\.(\d+)\.(\d+)(-[^+]+)?(?:\+.*)?$/);
+    if (!match) throw new Error(`Invalid managed engine version: ${version}`);
+    const required = minimum.split(".");
+    for (let index = 0; index < 3; index++) {
+        const actual = BigInt(match[index + 1]);
+        const expected = BigInt(required[index]);
+        if (actual !== expected) return actual > expected;
+    }
+    return !match[4];
+}
+
+function compatibleEngine(selection, minimum) {
+    return selection && (!selection.version || meetsMinimum(selection.version, minimum))
+        ? selection.executable : null;
 }
 
 function validateManifest(manifest, rid) {
@@ -244,12 +276,14 @@ async function installRelease(root, manifest, rid, fetcher = fetch) {
 }
 
 async function ensureEngine(env = process.env, fetcher = fetch) {
-    const existing = resolveEngine(env);
-    if (existing) return existing;
+    const minimum = minimumEngineVersion();
+    const existing = resolveEngineSelection(env);
+    const compatible = compatibleEngine(existing, minimum);
+    if (compatible) return compatible;
     if (env.NUDGE_AUTO_SETUP === "0") {
-        throw new Error("Automatic runtime setup is disabled. Install a verified engine or set NUDGE_ENGINE_PATH.");
+        throw new Error(`Automatic runtime setup is disabled. This plugin requires managed engine ${minimum} or newer; install a verified engine or set NUDGE_ENGINE_PATH.`);
     }
-    const root = path.resolve(env.NUDGE_STATE_DIR || defaultDataDir(env));
+    const root = path.resolve(env.NUDGE_STATE_DIR || existing?.root || defaultDataDir(env));
     await fsp.mkdir(root, { recursive: true });
     const engineRoot = path.join(root, "engine");
     await safeDirectory(engineRoot);
@@ -262,7 +296,7 @@ async function ensureEngine(env = process.env, fetcher = fetch) {
         } catch (error) {
             if (error.code !== "EEXIST") throw error;
             if (!regularPath(lock)) throw new Error(`Unsafe runtime setup lock: ${lock}`);
-            const installed = resolveEngine(env);
+            const installed = compatibleEngine(resolveEngineSelection(env), minimum);
             if (installed) return installed;
             if (Date.now() >= deadline) {
                 throw new Error(`Runtime setup is already locked: ${lock}. If no setup process is running, remove that lock and retry.`);
@@ -272,10 +306,14 @@ async function ensureEngine(env = process.env, fetcher = fetch) {
     }
     try {
         await handle.writeFile(`${process.pid}\n`);
-        const installed = resolveEngine(env);
+        const installed = compatibleEngine(resolveEngineSelection(env), minimum);
         if (installed) return installed;
         console.error(`dotnet-nudge: downloading a verified ${currentRid()} engine from ${repository}.`);
         const manifest = await publishedManifest(fetcher);
+        validateManifest(manifest, currentRid());
+        if (!meetsMinimum(manifest.version, minimum)) {
+            throw new Error(`Published engine ${manifest.version} is older than this plugin's minimum ${minimum}.`);
+        }
         return await installRelease(root, manifest, currentRid(), fetcher);
     } finally {
         await handle.close();
@@ -316,7 +354,9 @@ async function main(args) {
         throw new Error("Invalid hook host or event.");
     }
     const root = dataDir();
-    const engine = hook ? resolveEngine() : await ensureEngine();
+    const engine = hook
+        ? compatibleEngine(resolveEngineSelection(), minimumEngineVersion())
+        : await ensureEngine();
     if (!engine) {
         await missingHook(args[2], args[4], root);
         return;

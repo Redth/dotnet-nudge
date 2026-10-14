@@ -1,6 +1,6 @@
 {
   "name": "dotnet-nudge",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "A .NET maintenance plugin with shared skills and host-specific hooks; engine actions remain explicit.",
   "author": {
     "name": "Redth"

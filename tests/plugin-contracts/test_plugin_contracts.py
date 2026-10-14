@@ -47,8 +47,8 @@ CLAUDE_EVENTS = {
     "SessionEnd": ("session-end", "SessionEnd"),
 }
 SETUP_DIAGNOSTIC = (
-    "dotnet-nudge: runtime setup is required. MCP will automatically download and verify the engine "
-    "on first use; hooks never download or run a missing engine."
+    "dotnet-nudge: runtime setup or update is required. MCP will automatically download and verify a "
+    "compatible engine; hooks never download or run a missing or outdated managed engine."
 )
 
 
@@ -106,7 +106,7 @@ class PluginManifestTests(unittest.TestCase):
             {
                 "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
                 "name": "dotnet-nudge",
-                "version": "0.2.3",
+                "version": "0.2.4",
                 "description": "A .NET maintenance plugin with shared skills and host-specific hooks; engine actions remain explicit.",
                 "author": {"name": "Redth"},
                 "repository": "https://github.com/Redth/dotnet-nudge",
@@ -160,6 +160,7 @@ class PluginManifestTests(unittest.TestCase):
 
         runtime = read_json(plugin_dir / "runtime-manifest.json")
         self.assertEqual(runtime["status"], "release-channel")
+        self.assertEqual(runtime["minimumVersion"], "1.0.3")
         self.assertEqual(runtime["artifacts"], [])
         self.assertEqual(runtime["releaseManifestUrl"],
                          "https://github.com/Redth/dotnet-nudge/releases/latest/download/runtime-manifest.json")
@@ -192,6 +193,10 @@ class PluginManifestTests(unittest.TestCase):
             "dotnet-nudge status --workspace PATH [--state-dir PATH] --json",
         ):
             self.assertIn(command, status_skill)
+        self.assertIn("only read the cached scan", status_skill)
+        self.assertIn("run `nudge_scan` / CLI `scan`", status_skill)
+        self.assertIn("Read `coverage` as well as `findings`", status_skill)
+        self.assertIn("automatic workload discovery isn't available yet", status_skill)
 
         decision_skill = (plugin_dir / "skills/nudge-preferences/SKILL.md").read_text(encoding="utf-8")
         self.assertIn(

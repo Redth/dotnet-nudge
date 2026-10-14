@@ -9,7 +9,9 @@ The plugin uses one launcher for MCP, hooks and CLI commands. On first MCP or
 CLI use, it automatically downloads the matching self-contained engine from
 this repository's latest stable release, verifies both the compressed archive
 and executable SHA-256 digests, and installs it under writable user data.
-Subsequent starts reuse that engine offline; no engine `PATH` modification or
+Subsequent starts reuse a compatible engine offline. If an updated plugin
+requires a newer managed engine, the next MCP/CLI start downloads and verifies
+the required upgrade; there is no recurring latest-release check. No engine `PATH` modification or
 .NET SDK installation is required. **Node.js 22 or newer must be on `PATH`.**
 Hooks remain network-free and never bootstrap an engine themselves.
 
@@ -36,6 +38,11 @@ deprecated/unlisted upgrade candidates. Supplied offline workload evidence can
 flag missing workloads, manifest mismatches and newer same-band pinned sets.
 These are read-only recommendations, not automatic upgrades or proof of
 toolchain compatibility.
+
+`status` reads the last cached scan; run `scan` to check for updates now.
+Package checks require restored graphs and permitted source metadata. Workload
+checks still require `.dotnet-nudge/toolchains.json` evidence; automatic workload
+discovery is not implemented. Missing coverage is not an up-to-date result.
 
 For local source development, once the foundation source is present:
 

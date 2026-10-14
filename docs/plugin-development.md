@@ -66,7 +66,7 @@ override fails rather than silently selecting another executable. Versioned
 install pointers must select the current RID; links and traversal are rejected.
 Paths with spaces remain single arguments, and engine streams are inherited.
 
-If no engine is found, the wrapper emits one bounded, host-correct setup
+If no compatible managed engine is found, the hook wrapper emits one bounded, host-correct setup
 diagnostic and records its once-only marker in the writable state directory,
 not the plugin cache. `NUDGE_STATE_DIR` overrides the platform data location
 and is shared by the two adapters when set. If state storage is unavailable or
@@ -76,7 +76,8 @@ diagnostic rather than writing into the plugin cache.
 ## Automatic runtime setup
 
 The checked-in `runtime-manifest.json` describes a release channel, not
-fabricated artifact digests. On first MCP/CLI use without an installed engine,
+fabricated artifact digests. It also declares the plugin's exact stable
+`minimumVersion`. On MCP/CLI use without a compatible managed engine,
 the launcher reads this repository's latest stable release manifest. A bundled
 published manifest can instead pin an exact release. Only exact version/RID
 asset URLs under `Redth/dotnet-nudge` are accepted. The downloaded gzip asset
@@ -90,11 +91,20 @@ The engine is a self-contained single-file publish, including native SQLite
 libraries. Installation uses a staged version/RID directory and an atomic
 `engine/current` selection in shared platform user data, or `NUDGE_STATE_DIR`
 when specified. Simultaneous MCP starts coordinate through a setup lock.
-Normal starts reuse the installation without checking for updates or needing
-network access. A crashed setup's remaining lock produces a bounded error;
+Normal starts reuse an engine at or above `minimumVersion` without checking
+for updates or needing network access. Updating the plugin can raise that
+minimum; the next MCP/CLI start upgrades an older managed installation under
+the same setup lock. A release below the required version fails explicitly,
+and an unsuccessful update leaves the previous selection intact without
+running that outdated engine. Old version directories are retained, and
+newer managed engines are never downgraded. Explicit `NUDGE_ENGINE_PATH`,
+bundled and `PATH` engines are developer/user selections and are not replaced.
+Restart an already-running MCP connection to load the new engine.
+A crashed setup's remaining lock produces a bounded error;
 remove only that named lock after confirming no setup process is running.
 Set `NUDGE_AUTO_SETUP=0` to disable automatic downloads. Hooks never initiate
-setup, and their missing-engine notice remains bounded and once-only.
+setup; they do not run an outdated managed engine, and their setup/update
+notice remains bounded and once-only.
 
 If no public engine release is available, automatic setup fails explicitly;
 do not claim that the workspace was assessed.
@@ -150,6 +160,14 @@ discovers this installer selection too, so local archive setup needs no `PATH`
 change.
 
 ## Publishing engines
+
+For plugin-only changes, update both plugin manifests and the marketplace
+version, publish the commit to the marketplace's default branch, and use a
+`plugin-v<version>` tag for a source-only plugin release. Create that release
+with `--latest=false`: the repository's latest release must remain an engine
+release with `runtime-manifest.json`, because automatic engine setup uses its
+latest-release download URL. Plugin-only releases do not need a new engine
+build; set `minimumVersion` to the published engine required by the plugin.
 
 `.github/workflows/runtime-release.yml` builds native single-file engines on
 all six advertised RIDs, checks native SQLite and MCP startup, and packages

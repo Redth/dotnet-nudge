@@ -28,14 +28,14 @@ async function fixture(t) {
     return { root, env };
 }
 
-function release(bytes = Buffer.from("fixture engine; never executed\n")) {
+function release(bytes = Buffer.from("fixture engine; never executed\n"), version = "1.2.3") {
     const rid = runtime.currentRid();
     const archive = gzipSync(bytes);
     const hash = buffer => crypto.createHash("sha256").update(buffer).digest("hex");
     const manifest = {
-        schemaVersion: 1, engine: "dotnet-nudge", status: "published", version: "1.2.3",
+        schemaVersion: 1, engine: "dotnet-nudge", status: "published", version,
         artifacts: [{
-            rid, format: "gzip", url: `${releaseBase}/download/v1.2.3/dotnet-nudge-1.2.3-${rid}.gz`,
+            rid, format: "gzip", url: `${releaseBase}/download/v${version}/dotnet-nudge-${version}-${rid}.gz`,
             sha256: hash(archive), executableSha256: hash(bytes)
         }]
     };
@@ -90,6 +90,118 @@ test("simultaneous first-use processes coalesce setup", async t => {
         runtime.ensureEngine(env, published.fetcher)]);
     assert.equal(engines[0], engines[1]);
     assert.equal(published.requests.length, 2);
+});
+
+test("outdated managed engines upgrade once, retain the old install and then reuse offline", async t => {
+    const { root, env } = await fixture(t);
+    const old = release(Buffer.from("old engine\n"), "1.0.0");
+    const oldEngine = await runtime.installRelease(root, old.manifest, old.rid, old.fetcher);
+    const published = release(Buffer.from("updated engine\n"), "1.0.3");
+    const engines = await Promise.all([
+        runtime.ensureEngine(env, published.fetcher), runtime.ensureEngine(env, published.fetcher)
+    ]);
+    assert.equal(engines[0], engines[1]);
+    assert.notEqual(engines[0], oldEngine);
+    assert.equal(runtime.resolveEngine(env), engines[0]);
+    assert.deepEqual(await fsp.readFile(engines[0]), published.bytes);
+    assert.deepEqual(await fsp.readFile(oldEngine), old.bytes);
+    assert.equal(published.requests.length, 2);
+    assert.equal(await runtime.ensureEngine(env, () => { throw new Error("Must stay offline"); }), engines[0]);
+    assert.equal(fs.existsSync(path.join(root, "engine/.setup-lock")), false);
+});
+
+test("compatible managed versions are not downgraded or polled for updates", async t => {
+    const { root, env } = await fixture(t);
+    for (const version of ["1.0.3", "1.0.3+build.1", "1.0.10", "1.1.0", "2.0.0"]) {
+        const published = release(undefined, version);
+        const installed = await runtime.installRelease(root, published.manifest, published.rid, published.fetcher);
+        assert.equal(await runtime.ensureEngine(env, () => { throw new Error("Must not check releases"); }), installed);
+    }
+});
+
+test("a preview at the required stable version upgrades to the stable release", async t => {
+    const { root, env } = await fixture(t);
+    const preview = release(undefined, "1.0.3-rc.1");
+    await runtime.installRelease(root, preview.manifest, preview.rid, preview.fetcher);
+    const published = release(undefined, "1.0.3");
+    const installed = await runtime.ensureEngine(env, published.fetcher);
+    assert.ok(installed.includes(path.join("1.0.3", published.rid)));
+    assert.equal(published.requests.length, 2);
+});
+
+test("failed or disabled updates preserve the old selection but do not accept it", async t => {
+    const { root, env } = await fixture(t);
+    const old = release(undefined, "1.0.0");
+    const installed = await runtime.installRelease(root, old.manifest, old.rid, old.fetcher);
+    const pointer = path.join(root, "engine/current");
+    const before = await fsp.readFile(pointer, "utf8");
+    await assert.rejects(runtime.ensureEngine({ ...env, NUDGE_AUTO_SETUP: "0" },
+        () => { throw new Error("Opt-out must not download"); }), /disabled.*1\.0\.3/);
+    const unpublished = release(undefined, "1.0.2");
+    await assert.rejects(runtime.ensureEngine(env, unpublished.fetcher), /older.*minimum 1\.0\.3/);
+    assert.equal(unpublished.requests.length, 1);
+    const broken = release(undefined, "1.0.3");
+    broken.manifest.artifacts[0].sha256 = "0".repeat(64);
+    await assert.rejects(runtime.ensureEngine(env, broken.fetcher), /SHA-256 mismatch/);
+    assert.equal(await fsp.readFile(pointer, "utf8"), before);
+    assert.equal(runtime.resolveEngine(env), installed);
+    assert.equal(fs.existsSync(path.join(root, "engine/.setup-lock")), false);
+    assert.deepEqual(await fsp.readdir(path.join(root, "engine/1.0.3")), []);
+});
+
+test("explicit and PATH engines are preserved even when a managed engine is outdated", async t => {
+    const { root, env } = await fixture(t);
+    const old = release(undefined, "1.0.0");
+    const installed = await runtime.installRelease(root, old.manifest, old.rid, old.fetcher);
+    const noDownload = () => { throw new Error("User selections must not be replaced"); };
+    assert.equal(await runtime.ensureEngine({ ...env, NUDGE_ENGINE_PATH: process.execPath,
+        NUDGE_AUTO_SETUP: "0" }, noDownload), process.execPath);
+    const pathEnv = { ...env, NUDGE_STATE_DIR: path.join(root, "other state"), PATH: root };
+    const executable = path.join(root, path.basename(installed));
+    await fsp.copyFile(installed, executable);
+    if (process.platform !== "win32") await fsp.chmod(executable, 0o755);
+    assert.equal(await runtime.ensureEngine(pathEnv, noDownload), executable);
+    assert.equal(runtime.resolveEngine(env), installed);
+});
+
+test("host-managed installations upgrade in place without losing their lookup priority", async t => {
+    const { root, env } = await fixture(t);
+    const old = release(undefined, "1.0.0");
+    await runtime.installRelease(root, old.manifest, old.rid, old.fetcher);
+    const { NUDGE_STATE_DIR, ...hostEnv } = env;
+    hostEnv.NUDGE_PLUGIN_DATA = root;
+    const published = release(undefined, "1.0.3");
+    const installed = await runtime.ensureEngine(hostEnv, published.fetcher);
+    assert.ok(installed.startsWith(root + path.sep));
+    assert.equal(runtime.resolveEngine(hostEnv), installed);
+    assert.equal(await runtime.ensureEngine(hostEnv, () => { throw new Error("Must stay offline"); }), installed);
+});
+
+test("a state override receives the upgrade instead of replacing a shared fallback", async t => {
+    const { root, env } = await fixture(t);
+    const sharedRoot = runtime.defaultDataDir(env);
+    const old = release(undefined, "1.0.0");
+    const sharedEngine = await runtime.installRelease(sharedRoot, old.manifest, old.rid, old.fetcher);
+    assert.equal(runtime.resolveEngine(env), sharedEngine);
+    const published = release(undefined, "1.0.3");
+    const installed = await runtime.ensureEngine(env, published.fetcher);
+    assert.ok(installed.startsWith(path.join(root, "engine") + path.sep));
+    assert.equal(runtime.installedEngine(sharedRoot), sharedEngine);
+    assert.equal(runtime.resolveEngine(env), installed);
+});
+
+test("hooks do not run outdated managed engines or download an update", async t => {
+    const { root, env } = await fixture(t);
+    const old = release(undefined, "1.0.0");
+    await runtime.installRelease(root, old.manifest, old.rid, old.fetcher);
+    const result = spawnSync(process.execPath, [launcher, "hook", "--host", "copilot", "--event", "session-start"], {
+        env: { ...env, NUDGE_AUTO_SETUP: "0" }, input: "{}", encoding: "utf8"
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { additionalContext: runtime.setupDiagnostic });
+    assert.equal(result.stderr, "");
+    assert.equal(await fsp.readFile(path.join(root, "engine/current"), "utf8"), `1.0.0/${old.rid}\n`);
+    assert.equal(fs.existsSync(path.join(root, "engine/.setup-lock")), false);
 });
 
 test("bootstrap opt-out and unpublished releases fail explicitly without running anything", async t => {

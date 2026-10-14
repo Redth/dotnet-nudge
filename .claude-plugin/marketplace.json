@@ -5,13 +5,13 @@
   },
   "metadata": {
     "description": "A .NET maintenance plugin with host-specific hooks and shared skills.",
-    "version": "0.2.3"
+    "version": "0.2.4"
   },
   "plugins": [
     {
       "name": "dotnet-nudge",
       "description": "A .NET maintenance plugin with shared skills and host-specific hooks; engine actions remain explicit.",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "source": "./plugins/dotnet-nudge"
     }
   ]
