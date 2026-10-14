@@ -34,15 +34,22 @@ workspace. The following tools currently expose versioned JSON as text:
 `hook` registers its host-provided workspace and queues a scan on session
 start/prompt submission; session end closes the active registration and
 releases delivery leases. Hooks remain cached-only and never perform scans.
-The MCP process reconciles changed project/configuration/assets metadata every
-minute for active registrations, leases a queued scan per exact root, and
+The MCP process reconciles changed project/configuration/assets and local Git
+metadata every minute for active registrations, leases a queued scan per exact root, and
 retries read-only failures at most three times. It exits with its host; there
 is no detached daemon. If MCP is lazily started or absent, cached status
-reports pending coverage and an explicit `scan` is available. Worker results
+reports pending coverage and an explicit `scan` is available. When a scan is
+pending or failed, the cached snapshot is labeled stale and cannot be delivered
+as a new suggestion. Worker results
 cannot force a message into an otherwise idle chat.
 
-The current scanner checks declared SDK servicing metadata only. It does not
-yet claim resolved package, runtime, workload or trial coverage. Package
+The current scanner checks declared SDK servicing metadata and runs bounded,
+read-only native `dotnet` probes for effective SDK selection per execution
+scope, installed SDKs/runtimes, and local tools. Each probe records confirmed
+or blocked coverage separately; an observed SDK does not turn a declared pin
+into a confirmed upgrade recommendation. No restore, build, workload update,
+or third-party script is performed, and at most eight execution scopes are
+probed. It does not yet claim resolved package, workload or trial coverage. Package
 guidance reading and actual approved trials require their respective reviewed
 modules; reporting a blocked operation rather than synthesizing success is
 intentional. An MCP protocol child-process test verifies initialization,

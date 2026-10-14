@@ -181,12 +181,20 @@ public sealed class ScanWorker(McpStateDirectory location, ILogger<ScanWorker> l
                     throw new InvalidDataException("Registered workspace root changed or disappeared.");
                 var source = new ReleaseMetadata(state, client,
                     fixtureDirectory: Environment.GetEnvironmentVariable("NUDGE_RELEASES_DIR"));
-                var report = await new NudgeScanner(source).ScanAsync(job.Root, stoppingToken);
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                deadline.CancelAfter(TimeSpan.FromSeconds(90));
+                var report = await new NudgeScanner(source).ScanAsync(job.Root, deadline.Token,
+                    probeInstalled: true);
                 state.FinishScan(job, owner, report, null);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
                 return;
+            }
+            catch (OperationCanceledException)
+            {
+                logger.LogWarning("Scan exceeded 90 seconds for workspace {Workspace}", job.Workspace);
+                state.FinishScan(job, owner, null, "Read-only scan exceeded 90 seconds.");
             }
             catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or InvalidOperationException
                 or UnauthorizedAccessException or ArgumentException)

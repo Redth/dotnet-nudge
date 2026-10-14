@@ -58,6 +58,21 @@ public sealed class FoundationTests
         new(1, WorkspaceDiscovery.Discover(fixture.Root), [finding], [], DateTimeOffset.UtcNow);
 
     [Fact]
+    public void MetadataRevalidationPreservesBodyFetchProvenance()
+    {
+        using var fixture = new Fixture();
+        var clock = new Clock();
+        using var state = fixture.State(clock);
+        state.Cache(ReleaseMetadata.IndexUrl, Index, "etag");
+        var fetched = state.Cached(ReleaseMetadata.IndexUrl)!.Value.Fetched;
+        clock.Now = clock.Now.AddHours(25);
+        state.Cache(ReleaseMetadata.IndexUrl, Index, "etag", revalidated: true);
+        var revalidated = state.Cached(ReleaseMetadata.IndexUrl)!.Value;
+        Assert.Equal(fetched, revalidated.Fetched);
+        Assert.Equal(clock.Now, revalidated.Refreshed);
+    }
+
+    [Fact]
     public void DiscoveryKeepsScopedDeclarationsAndAvoidsGeneratedDirectories()
     {
         using var fixture = new Fixture();

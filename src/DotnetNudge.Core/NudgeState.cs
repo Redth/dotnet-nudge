@@ -64,7 +64,8 @@ public sealed class NudgeState : IDisposable
               PRIMARY KEY(repository, subject, revision)
             );
             CREATE TABLE IF NOT EXISTS metadata (
-              source TEXT PRIMARY KEY, body TEXT NOT NULL, etag TEXT, refreshed INTEGER NOT NULL
+              source TEXT PRIMARY KEY, body TEXT NOT NULL, etag TEXT, refreshed INTEGER NOT NULL,
+              fetched INTEGER
             );
             CREATE TABLE IF NOT EXISTS workspace_scan_jobs (
               workspace TEXT PRIMARY KEY, requested INTEGER NOT NULL, status TEXT NOT NULL
@@ -86,6 +87,21 @@ public sealed class NudgeState : IDisposable
             AddJobColumn("attempts", "INTEGER NOT NULL DEFAULT 0");
             AddJobColumn("error", "TEXT");
             AddJobColumn("next_retry", "INTEGER NOT NULL DEFAULT 0");
+            AddJobColumn("stale", "INTEGER NOT NULL DEFAULT 0");
+            using (var columns = connection.CreateCommand())
+            {
+                columns.CommandText = "PRAGMA table_info(metadata)";
+                var hasFetched = false;
+                using (var reader = columns.ExecuteReader())
+                    while (reader.Read()) hasFetched |= reader.GetString(1) == "fetched";
+                if (!hasFetched)
+                {
+                    columns.CommandText = "ALTER TABLE metadata ADD COLUMN fetched INTEGER";
+                    columns.ExecuteNonQuery();
+                }
+                columns.CommandText = "UPDATE metadata SET fetched=refreshed WHERE fetched IS NULL";
+                columns.ExecuteNonQuery();
+            }
             using (var columns = connection.CreateCommand())
             {
                 columns.CommandText = "PRAGMA table_info(workspace_registration)";
@@ -218,7 +234,7 @@ public sealed class NudgeState : IDisposable
     {
         var report = Latest(workspace);
         using var job = connection.CreateCommand();
-        job.CommandText = "SELECT status,error FROM workspace_scan_jobs WHERE workspace=$s";
+        job.CommandText = "SELECT status,error,stale FROM workspace_scan_jobs WHERE workspace=$s";
         job.Parameters.AddWithValue("$s", workspace);
         using var row = job.ExecuteReader();
         var pending = row.Read()
@@ -227,6 +243,7 @@ public sealed class NudgeState : IDisposable
                     ? $"Scan failed: {(row.IsDBNull(1) ? "unknown error" : row.GetString(1))}; request a new scan."
                     : $"A {row.GetString(0)} scan is queued; start MCP or run scan explicitly.")
             : null;
+        var stale = pending is not null && row.GetInt64(2) != 0;
         if (report is null)
             return new(Contract.Version, repository, worktree, workspace, null, [],
                 pending is null
@@ -235,9 +252,14 @@ public sealed class NudgeState : IDisposable
         return new(Contract.Version, repository, worktree, workspace, report.ScannedAt,
             report.Findings.Select(f =>
             {
-                var reason = Suppression(repository, f) ?? DeliverySuppression(repository, f);
+                var reason = !stale ? Suppression(repository, f) ?? DeliverySuppression(repository, f)
+                    : "scan-pending";
                 return new FindingStatus(f, reason is null, reason);
-            }).ToArray(), pending is null ? report.Coverage : report.Coverage.Append(pending).ToArray());
+            }).ToArray(), pending is null ? report.Coverage : stale
+                ? report.Coverage.Append(new Coverage("snapshot", Assessment.Stale,
+                    "A newer workspace scan is pending or failed; cached findings are not delivered."))
+                    .Append(pending).ToArray()
+                : report.Coverage.Append(pending).ToArray());
     }
 
     string? DeliverySuppression(string repository, Finding finding)
@@ -494,7 +516,8 @@ public sealed class NudgeState : IDisposable
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO workspace_scan_jobs(workspace,requested,status) VALUES($s,$now,'pending')
+            INSERT INTO workspace_scan_jobs(workspace,requested,status)
+            VALUES($s,$now,'pending')
             ON CONFLICT(workspace) DO NOTHING
             """;
         command.Parameters.AddWithValue("$s", workspace);
@@ -508,7 +531,7 @@ public sealed class NudgeState : IDisposable
         command.CommandText = """
             INSERT INTO workspace_scan_jobs(workspace,requested,status) VALUES($s,$now,'pending')
             ON CONFLICT(workspace) DO UPDATE SET status='pending',requested=$now,
-            attempts=0,error=NULL,next_retry=0 WHERE status='failed'
+            attempts=0,error=NULL,next_retry=0,stale=1 WHERE status='failed'
             """;
         command.Parameters.AddWithValue("$s", workspace);
         command.Parameters.AddWithValue("$now", clock.GetUtcNow().ToUnixTimeSeconds());
@@ -546,12 +569,13 @@ public sealed class NudgeState : IDisposable
             if (command.ExecuteNonQuery() == 1)
             {
                 command.CommandText = """
-                    INSERT INTO workspace_scan_jobs(workspace,requested,status) VALUES($s,$now,'pending')
+                    INSERT INTO workspace_scan_jobs(workspace,requested,status,stale)
+                    VALUES($s,$now,'pending',1)
                     ON CONFLICT(workspace) DO UPDATE SET
                     requested=MAX(workspace_scan_jobs.requested+1,$now),
                     status=CASE WHEN status='running' THEN 'running' ELSE 'pending' END,
                     attempts=CASE WHEN status='running' THEN attempts ELSE 0 END,
-                    error=NULL,next_retry=0
+                    error=NULL,next_retry=0,stale=1
                     """;
                 command.Parameters.AddWithValue("$now", clock.GetUtcNow().ToUnixTimeSeconds());
                 command.ExecuteNonQuery();
@@ -574,9 +598,13 @@ public sealed class NudgeState : IDisposable
                 if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0 ||
                     !(name is "global.json" or "project.assets.json" or "packages.lock.json"
                     or "Directory.Packages.props" or "NuGet.Config" or "nuget.config"
+                    or "dotnet-tools.json" or "Directory.Build.props" or "Directory.Build.targets"
+                    or "HEAD" or "index"
                     || name.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)
                     || name.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase)
-                    || name.EndsWith(".vbproj", StringComparison.OrdinalIgnoreCase))) continue;
+                    || name.EndsWith(".vbproj", StringComparison.OrdinalIgnoreCase)
+                    || name.EndsWith(".props", StringComparison.OrdinalIgnoreCase)
+                    || name.EndsWith(".targets", StringComparison.OrdinalIgnoreCase))) continue;
                 var info = new FileInfo(path);
                 var line = $"{Path.GetRelativePath(root, path)}|{info.Length}|{info.LastWriteTimeUtc.Ticks}\n";
                 hash.AppendData(Encoding.UTF8.GetBytes(line));
@@ -585,8 +613,21 @@ public sealed class NudgeState : IDisposable
             {
                 if ((File.GetAttributes(child) & FileAttributes.ReparsePoint) != 0) continue;
                 var name = Path.GetFileName(child);
-                if (name is ".git" or "node_modules" or "bin" or ".vs" or ".idea" or "vendor")
+                if (name is "node_modules" or "bin" or ".vs" or ".idea" or "vendor")
                     continue;
+                if (name == ".git")
+                {
+                    foreach (var gitMetadata in new[] { "HEAD", "index" })
+                    {
+                        var file = Path.Combine(child, gitMetadata);
+                        if (!File.Exists(file) || (File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
+                            continue;
+                        var info = new FileInfo(file);
+                        hash.AppendData(Encoding.UTF8.GetBytes(
+                            $".git/{gitMetadata}|{info.Length}|{info.LastWriteTimeUtc.Ticks}\n"));
+                    }
+                    continue;
+                }
                 Walk(child, depth + 1);
             }
         }
@@ -673,7 +714,7 @@ public sealed class NudgeState : IDisposable
             ? "DELETE FROM workspace_scan_jobs WHERE workspace=$s AND owner=$owner AND requested<=$requested"
             : """
               UPDATE workspace_scan_jobs SET status=$status,error=$error,
-              next_retry=$retry,owner=NULL,lease_until=0 WHERE workspace=$s AND owner=$owner
+              next_retry=$retry,owner=NULL,lease_until=0,stale=1 WHERE workspace=$s AND owner=$owner
               """;
         command.Parameters.AddWithValue("$requested", job.Requested);
         if (report is null)
@@ -694,29 +735,33 @@ public sealed class NudgeState : IDisposable
         transaction.Commit();
     }
 
-    public (string Body, string? Etag, DateTimeOffset Refreshed)? Cached(string source)
+    public (string Body, string? Etag, DateTimeOffset Refreshed, DateTimeOffset Fetched)? Cached(string source)
     {
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT body,etag,refreshed FROM metadata WHERE source=$source";
+        command.CommandText = "SELECT body,etag,refreshed,fetched FROM metadata WHERE source=$source";
         command.Parameters.AddWithValue("$source", source);
         using var reader = command.ExecuteReader();
         return reader.Read() ? (reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1),
-            DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(2))) : null;
+            DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(2)),
+            DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(3))) : null;
     }
 
     public sealed record ScanJob(string Workspace, string Root, long Requested, int Attempts);
 
-    public void Cache(string source, string body, string? etag)
+    public void Cache(string source, string body, string? etag, bool revalidated = false)
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO metadata(source,body,etag,refreshed) VALUES($source,$body,$etag,$now)
-            ON CONFLICT(source) DO UPDATE SET body=$body,etag=$etag,refreshed=$now
+            INSERT INTO metadata(source,body,etag,refreshed,fetched)
+            VALUES($source,$body,$etag,$now,$now)
+            ON CONFLICT(source) DO UPDATE SET body=$body,etag=$etag,refreshed=$now,
+            fetched=CASE WHEN $revalidated=1 THEN metadata.fetched ELSE $now END
             """;
         command.Parameters.AddWithValue("$source", source);
         command.Parameters.AddWithValue("$body", body);
         command.Parameters.AddWithValue("$etag", (object?)etag ?? DBNull.Value);
         command.Parameters.AddWithValue("$now", clock.GetUtcNow().ToUnixTimeSeconds());
+        command.Parameters.AddWithValue("$revalidated", revalidated ? 1 : 0);
         command.ExecuteNonQuery();
     }
 

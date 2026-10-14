@@ -28,7 +28,10 @@ public sealed class NudgeService(NudgeState state, string? owner = null, bool cl
             fixtureDirectory: Environment.GetEnvironmentVariable("NUDGE_RELEASES_DIR"));
         try
         {
-            var result = await new NudgeScanner(source).ScanAsync(root, cancellationToken);
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            deadline.CancelAfter(TimeSpan.FromSeconds(90));
+            var result = await new NudgeScanner(source).ScanAsync(root, deadline.Token,
+                probeInstalled: true);
             state.FinishScan(job, sessionOwner, result, null);
             return result;
         }

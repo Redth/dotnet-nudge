@@ -79,6 +79,9 @@ public sealed class ProtocolTests
                 Assert.Equal("unknown", initial.RootElement.GetProperty("coverage")[0]
                     .GetProperty("assessment").GetString());
             using var scan = await Call("nudge_scan", new() { ["workspace"] = workspace });
+            Assert.Contains(scan.RootElement.GetProperty("coverage").EnumerateArray(),
+                c => c.GetProperty("check").GetString() == "installed-sdks"
+                    && c.GetProperty("assessment").GetString() == "confirmed");
             var finding = scan.RootElement.GetProperty("findings")[0];
             var id = finding.GetProperty("id").GetString()!;
             var revision = finding.GetProperty("revision").GetString()!;
@@ -174,6 +177,15 @@ public sealed class ProtocolTests
             Assert.Equal(WorkspaceDiscovery.Canonical(scope), changed.Root);
             Assert.Equal(job.Workspace, changed.Workspace);
             Assert.Null(first.LeaseScan("three"));
+            var (repo, tree) = WorkspaceDiscovery.Identities(scope);
+            Assert.Contains(second.Status(repo, tree, changed.Workspace).Coverage,
+                c => c.Check == "snapshot" && c.Assessment == Assessment.Stale);
+            second.FinishScan(changed, "two", new ScanReport(Contract.Version,
+                WorkspaceDiscovery.Discover(scope), [], [], DateTimeOffset.UtcNow), null);
+            File.WriteAllText(Path.Combine(scope, "Directory.Build.props"),
+                """<Project><PropertyGroup><LangVersion>latest</LangVersion></PropertyGroup></Project>""");
+            second.Reconcile();
+            Assert.NotNull(second.LeaseScan("third"));
         }
         finally { Directory.Delete(root, recursive: true); }
     }
@@ -303,5 +315,28 @@ public sealed class ProtocolTests
             Assert.Contains("Unsupported", stderr);
         }
         finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task ProbeRejectsScriptMasqueradingAsDotnet()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var root = Path.Combine(Path.GetTempPath(), "nudge-probe-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var old = Environment.GetEnvironmentVariable("DOTNET_ROOT");
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "dotnet"), "#!/bin/sh\nexit 0\n");
+            Environment.SetEnvironmentVariable("DOTNET_ROOT", root);
+            var snapshot = await DotnetProbes.ReadAsync(WorkspaceDiscovery.Discover(root));
+            Assert.Empty(snapshot.EffectiveSdks);
+            Assert.Contains(snapshot.Coverage,
+                c => c.Check == "dotnet-probe" && c.Assessment == Assessment.Blocked);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("DOTNET_ROOT", old);
+            Directory.Delete(root, recursive: true);
+        }
     }
 }

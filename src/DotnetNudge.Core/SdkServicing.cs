@@ -28,7 +28,7 @@ public sealed class ReleaseMetadata : IReleaseMetadata
         this.fixtureDirectory = fixtureDirectory;
     }
 
-    public DateTimeOffset? LastRetrieved(string source) => state.Cached(source)?.Refreshed;
+    public DateTimeOffset? LastRetrieved(string source) => state.Cached(source)?.Fetched;
 
     public async Task<(string Body, Assessment Freshness)> ReadAsync(string source, CancellationToken cancellationToken)
     {
@@ -64,7 +64,7 @@ public sealed class ReleaseMetadata : IReleaseMetadata
             using var response = await client.SendAsync(request, cancellationToken);
             if (response.StatusCode == HttpStatusCode.NotModified && cached is not null)
             {
-                state.Cache(source, cached.Value.Body, cached.Value.Etag);
+                state.Cache(source, cached.Value.Body, cached.Value.Etag, revalidated: true);
                 return (cached.Value.Body, Assessment.Confirmed);
             }
             response.EnsureSuccessStatusCode();
@@ -249,11 +249,15 @@ public static class SdkServicing
 
 public sealed class NudgeScanner(IReleaseMetadata metadata, TimeProvider? clock = null)
 {
-    public async Task<ScanReport> ScanAsync(string workspace, CancellationToken cancellationToken = default)
+    public async Task<ScanReport> ScanAsync(string workspace, CancellationToken cancellationToken = default,
+        bool probeInstalled = false)
     {
         var inventory = WorkspaceDiscovery.Discover(workspace);
         var (findings, sdkCoverage) = await SdkServicing.CheckAsync(inventory, metadata, clock, cancellationToken);
+        var observed = probeInstalled ? await DotnetProbes.ReadAsync(inventory, cancellationToken) : null;
         return new(Contract.Version, inventory, findings,
-            inventory.Coverage.Concat(sdkCoverage).ToArray(), (clock ?? TimeProvider.System).GetUtcNow());
+            inventory.Coverage.Where(c => observed is null || c.Check != "effective-sdk")
+                .Concat(sdkCoverage).Concat(observed?.Coverage ?? []).ToArray(),
+            (clock ?? TimeProvider.System).GetUtcNow());
     }
 }
