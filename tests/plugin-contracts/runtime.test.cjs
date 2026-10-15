@@ -96,7 +96,7 @@ test("outdated managed engines upgrade once, retain the old install and then reu
     const { root, env } = await fixture(t);
     const old = release(Buffer.from("old engine\n"), "1.0.0");
     const oldEngine = await runtime.installRelease(root, old.manifest, old.rid, old.fetcher);
-    const published = release(Buffer.from("updated engine\n"), "1.0.3");
+    const published = release(Buffer.from("updated engine\n"), "1.0.4");
     const engines = await Promise.all([
         runtime.ensureEngine(env, published.fetcher), runtime.ensureEngine(env, published.fetcher)
     ]);
@@ -112,7 +112,7 @@ test("outdated managed engines upgrade once, retain the old install and then reu
 
 test("compatible managed versions are not downgraded or polled for updates", async t => {
     const { root, env } = await fixture(t);
-    for (const version of ["1.0.3", "1.0.3+build.1", "1.0.10", "1.1.0", "2.0.0"]) {
+    for (const version of ["1.0.4", "1.0.4+build.1", "1.0.10", "1.1.0", "2.0.0"]) {
         const published = release(undefined, version);
         const installed = await runtime.installRelease(root, published.manifest, published.rid, published.fetcher);
         assert.equal(await runtime.ensureEngine(env, () => { throw new Error("Must not check releases"); }), installed);
@@ -121,11 +121,11 @@ test("compatible managed versions are not downgraded or polled for updates", asy
 
 test("a preview at the required stable version upgrades to the stable release", async t => {
     const { root, env } = await fixture(t);
-    const preview = release(undefined, "1.0.3-rc.1");
+    const preview = release(undefined, "1.0.4-rc.1");
     await runtime.installRelease(root, preview.manifest, preview.rid, preview.fetcher);
-    const published = release(undefined, "1.0.3");
+    const published = release(undefined, "1.0.4");
     const installed = await runtime.ensureEngine(env, published.fetcher);
-    assert.ok(installed.includes(path.join("1.0.3", published.rid)));
+    assert.ok(installed.includes(path.join("1.0.4", published.rid)));
     assert.equal(published.requests.length, 2);
 });
 
@@ -136,17 +136,17 @@ test("failed or disabled updates preserve the old selection but do not accept it
     const pointer = path.join(root, "engine/current");
     const before = await fsp.readFile(pointer, "utf8");
     await assert.rejects(runtime.ensureEngine({ ...env, NUDGE_AUTO_SETUP: "0" },
-        () => { throw new Error("Opt-out must not download"); }), /disabled.*1\.0\.3/);
-    const unpublished = release(undefined, "1.0.2");
-    await assert.rejects(runtime.ensureEngine(env, unpublished.fetcher), /older.*minimum 1\.0\.3/);
+        () => { throw new Error("Opt-out must not download"); }), /disabled.*1\.0\.4/);
+    const unpublished = release(undefined, "1.0.3");
+    await assert.rejects(runtime.ensureEngine(env, unpublished.fetcher), /older.*minimum 1\.0\.4/);
     assert.equal(unpublished.requests.length, 1);
-    const broken = release(undefined, "1.0.3");
+    const broken = release(undefined, "1.0.4");
     broken.manifest.artifacts[0].sha256 = "0".repeat(64);
     await assert.rejects(runtime.ensureEngine(env, broken.fetcher), /SHA-256 mismatch/);
     assert.equal(await fsp.readFile(pointer, "utf8"), before);
     assert.equal(runtime.resolveEngine(env), installed);
     assert.equal(fs.existsSync(path.join(root, "engine/.setup-lock")), false);
-    assert.deepEqual(await fsp.readdir(path.join(root, "engine/1.0.3")), []);
+    assert.deepEqual(await fsp.readdir(path.join(root, "engine/1.0.4")), []);
 });
 
 test("explicit and PATH engines are preserved even when a managed engine is outdated", async t => {
@@ -170,7 +170,7 @@ test("host-managed installations upgrade in place without losing their lookup pr
     await runtime.installRelease(root, old.manifest, old.rid, old.fetcher);
     const { NUDGE_STATE_DIR, ...hostEnv } = env;
     hostEnv.NUDGE_PLUGIN_DATA = root;
-    const published = release(undefined, "1.0.3");
+    const published = release(undefined, "1.0.4");
     const installed = await runtime.ensureEngine(hostEnv, published.fetcher);
     assert.ok(installed.startsWith(root + path.sep));
     assert.equal(runtime.resolveEngine(hostEnv), installed);
@@ -183,7 +183,7 @@ test("a state override receives the upgrade instead of replacing a shared fallba
     const old = release(undefined, "1.0.0");
     const sharedEngine = await runtime.installRelease(sharedRoot, old.manifest, old.rid, old.fetcher);
     assert.equal(runtime.resolveEngine(env), sharedEngine);
-    const published = release(undefined, "1.0.3");
+    const published = release(undefined, "1.0.4");
     const installed = await runtime.ensureEngine(env, published.fetcher);
     assert.ok(installed.startsWith(path.join(root, "engine") + path.sep));
     assert.equal(runtime.installedEngine(sharedRoot), sharedEngine);

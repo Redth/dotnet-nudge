@@ -121,6 +121,10 @@ public sealed class ProtocolTests
                 Assert.Contains("Not now, not a choice menu in chat", description);
                 Assert.Contains("short, friendly, plain-language questions and choices", description);
                 Assert.Contains("What's new?, Help me update and Remind me next week", description);
+                Assert.Contains("actionable NuGet package, workload, runtime and host-tool results", description);
+                Assert.Contains("not SDK-only choices", description);
+                Assert.Contains("advisories without a candidate", description);
+                Assert.Contains("respect reminder cooldowns and explicit report-only requests", description);
                 Assert.Contains("Keep finding IDs, revision tokens, assessment labels and ISO timestamps out of user-facing text", description);
                 Assert.Contains("Help me update requests a plan, not approval for changes or trials", description);
                 Assert.Contains("Explain the actual changes and ask before executing them", description);

@@ -75,6 +75,45 @@ available tools:
 | Don't ask about this update | Offer only when a concrete candidate exists. Record `skip-version` for that exact candidate; later versions can still be offered. |
 | Not now | Continue without a durable preference mutation. Cancellation, dismissal and no answer also grant no consent. Existing hook delivery cooldowns still apply. |
 
+## Apply questions to every maintenance category
+
+Do not reserve the picker for SDK updates. After an actionable package or
+toolchain assessment, or a newly delivered eligible hook finding, offer one
+focused native question about that exact dependency or tool. Reading a tool
+result is not enough: invoke the question tool rather than ending with a list
+of updates and "let me know." An explicit report-only request remains report-only.
+
+Use the finding's scope and current evidence to name the package/tool, project
+when relevant, and exact current/candidate versions. Never identify a NuGet
+package update as an SDK update or combine unrelated dependencies into one
+approval. Use these routes only when evidence and supported next steps permit:
+
+| Finding | Question and choices |
+| --- | --- |
+| `package-update` | "There's an update to <package>, from <current> to <candidate>. Want to hear what's changed or get help updating it?" Offer What's new?, Help me update, Remind me next week, Not now. |
+| `package-advisory` with a candidate | "An advisory affects the restored version of <package>, and <candidate> is a candidate to investigate. Want to hear about the advisory or get help updating?" Offer Tell me more, Help me update, Remind me next week, Not now. Say whether a fix is known or only a candidate; do not claim the app is exploitable. |
+| `package-advisory` without a candidate | "There's an advisory for <package>, but I haven't identified a verified update yet. Want help investigating a fix?" Offer Tell me more, Help me find a fix, Remind me next week, Not now. |
+| `package-deprecation` | "<package> <current> is deprecated. Want to hear why or get help finding an alternative?" Offer Tell me more, Help me find an alternative, Remind me next week, Not now. Publisher replacement metadata does not authorize querying that package or prove compatibility. |
+| `workload-set-update` | "The supplied workload information lists a newer set, <candidate>. Want to hear what's changed or get help planning an update?" Offer What's new?, Help me update, Remind me next week, Not now. Preserve the current pin until separately approved; the trial runner cannot install workloads. |
+| `workload-missing` | "The supplied inventory doesn't list the selected <workload> workload. Want help checking what would be needed to install it?" Offer Tell me more, Help me plan installation, Remind me next week, Not now. Do not describe offline inventory as live discovery. |
+| `workload-set-difference` / `workload-manifest-difference` | "The supplied workload inventory differs from this project's selection. Want help checking the mismatch?" Offer Tell me more, Help me check the mismatch, Remind me next week, Not now. A mismatch is not automatically an upgrade or a reason to overwrite a pin. |
+| `host-tool-incompatibility` | "The supplied <tool> information doesn't match this project's requirements. Want help checking compatibility?" Offer Tell me more, Help me check compatibility, Remind me next week, Not now. Do not promise an unknown compatible version. |
+| `local-runtime-security-servicing` | "There's a security servicing update for the local <runtime>, from <current> to <candidate>. Want to hear more or get help updating it?" Offer Tell me more, Help me update, Remind me next week, Not now. Explain that this does not update deployed apps. |
+| `deployment-runtime-security-servicing` | "The supplied deployment information points to a security servicing update for <runtime>. Want help planning that deployment update?" Offer Tell me more, Help me update, Remind me next week, Not now. Do not substitute a local runtime install for a container/self-contained deployment change. |
+| `restored-graph-change` | "<package> already changed in the restored dependency graph. Want to hear what changed?" Offer Tell me more and Not now. This is an observed change, not an available update. |
+
+"Help me find a fix", "Help me find an alternative", "Help me check the
+mismatch", "Help me check compatibility" and "Help me plan installation"
+request investigation or a plan only, just like "Help me update." Separately
+approve new metadata acquisition, file edits, downloads, installs and trial
+execution. Do not skip package-source approval or the human trial approval.
+
+If several findings exist, prioritize security and other higher-priority
+actionable findings, then present one relevant question at a natural boundary.
+Do not ask a picker for every dependency or stack multiple questions to bypass
+the repository's routine-delivery limit. New categories do not get separate
+cooldowns, and an answer for one dependency never authorizes another.
+
 For a question about reminder preferences, "Stop SDK reminders" or "Turn SDK
 reminders back on" can map to category disable/enable. Explain that it affects
 all reminders of that type for this repository, including security reminders
@@ -156,7 +195,10 @@ an unsolicited question, even after a hook. An explicit request to inspect a
 suppressed finding can still be answered read-only.
 
 Keep routine suggestions at a natural task boundary, not in the middle of
-unrelated work. A request for status alone is not a request for a decision.
+unrelated work. A request to check for updates may end with one relevant
+update question when actionable evidence exists, including for NuGet and
+toolchains; it does not itself authorize a change or reminder decision.
+An explicit request for just a report or cached status does not require a question.
 Do not repeat the same question after answering "What's new?" unless the user
 asks to proceed or another real decision is needed.
 

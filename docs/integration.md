@@ -187,6 +187,21 @@ explanations, questions, option descriptions or confirmations. Important
 uncertainty remains explicit in everyday language, and previews remain labeled
 as previews.
 
+Questions apply to NuGet updates/advisories/deprecations, workload and host-tool
+issues, and local/deployment runtime servicing, not only SDK updates. Hook
+context supplies finding-specific routing, MCP descriptions reinforce it, and
+the shared question reference specifies category-specific questions and choices.
+A current update check can end with one relevant native question; explicit
+report-only/cached-status requests remain reports. Prioritize a relevant
+actionable finding rather than asking once per dependency.
+
+Deprecations and advisories without a candidate offer help finding an
+alternative or fix instead of promising an update. Workload mismatches and
+already-observed graph changes are not upgrades. Offline workload evidence is
+not live discovery; local runtime installation is not a deployment fix.
+Unknown, blocked or stale coverage alone does not authorize an update prompt.
+These routes preserve the shared repository delivery limits and suppressions.
+
 `What's new?` is read-only. `Help me update` leads to a supported plan and
 approval of its actual changes, not immediate editing or installation.
 Snooze/skip/category mutations require the user's explicit reminder choice,

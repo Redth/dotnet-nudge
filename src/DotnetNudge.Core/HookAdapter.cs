@@ -53,6 +53,7 @@ public static class HookAdapter
             "user answer; offer it once if the current ID and revision still match. " +
             $"When offering this finding, call the host's native `{questionTool}` tool with one " +
             "single-select question and 2-4 concrete choices, including Not now; do not print a choice menu in chat. " +
+            QuestionGuidance(finding) +
             "Use short, friendly, plain-language questions and choices such as What's new?, Help me update, " +
             "Remind me next week and Not now, as appropriate. Keep finding IDs, revision tokens, assessment " +
             "labels and ISO timestamps out of user-facing text. Details are read-only; Help me update requests " +
@@ -80,4 +81,49 @@ public static class HookAdapter
         state.MarkDelivered(repository, finding, owner);
         return output;
     }
+
+    static string QuestionGuidance(Finding finding) => finding.Kind switch
+    {
+        "package-update" =>
+            "This is a NuGet package update, not an SDK update. Identify the package and project from " +
+            "current evidence and ask whether to hear what's changed or get help updating that package. ",
+        "package-advisory" when finding.Candidate is not null =>
+            "This is a NuGet package advisory with a candidate, not an SDK update. Ask whether to learn " +
+            "about the advisory or get help updating the affected package; do not claim the app is " +
+            "exploitable or the candidate is a verified fix without supporting evidence. ",
+        "package-advisory" =>
+            "This NuGet package advisory has no verified update candidate. Offer Tell me more, " +
+            "Help me find a fix, Remind me next week and Not now; do not promise an update or a known fix. ",
+        "package-deprecation" =>
+            "This exact NuGet package version is deprecated. Ask whether to learn why or get help " +
+            "finding a supported version or replacement. Offer Tell me more, Help me find an alternative, " +
+            "Remind me next week and Not now; replacement metadata is not proof of compatibility. ",
+        "workload-set-update" =>
+            "This is a workload-set update from supplied offline evidence. Ask whether to hear what's " +
+            "changed or get help planning that exact set update, preserving the existing pin until approved. " +
+            "Help me update means a plan; workload installation through the trial runner is unsupported. ",
+        "workload-set-difference" or "workload-manifest-difference" =>
+            "This is a workload configuration difference, not necessarily an upgrade. Offer Tell me more, " +
+            "Help me check the mismatch, Remind me next week and Not now; do not choose a replacement " +
+            "version or claim workload installation is supported by the trial runner. ",
+        "workload-missing" =>
+            "A selected workload is absent from supplied inventory, not verified live inventory. Offer " +
+            "Tell me more, Help me plan installation, Remind me next week and Not now; the trial runner " +
+            "does not install workloads. ",
+        "host-tool-incompatibility" =>
+            "Supplied host-tool evidence indicates a compatibility issue. Offer Tell me more, " +
+            "Help me check compatibility, Remind me next week and Not now; do not promise an exact " +
+            "tool update or assume permission to install it. ",
+        "local-runtime-security-servicing" =>
+            "This update is for an observed local shared runtime. Ask whether to learn about the " +
+            "security servicing release or get help updating locally; this does not update deployed apps. ",
+        "deployment-runtime-security-servicing" =>
+            "This update concerns an explicitly evidenced deployment runtime. Ask whether to learn " +
+            "about the security servicing release or get help planning that deployment update; " +
+            "installing a local runtime is not a deployment fix. ",
+        "restored-graph-change" =>
+            "This package graph already changed; it is not an available upgrade. Offer Tell me more " +
+            "and Not now, not Help me update. ",
+        _ => ""
+    };
 }
