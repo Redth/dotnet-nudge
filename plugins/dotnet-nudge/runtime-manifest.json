@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "engine": "dotnet-nudge",
   "status": "release-channel",
-  "minimumVersion": "1.0.3",
+  "minimumVersion": "1.0.4",
   "releaseManifestUrl": "https://github.com/Redth/dotnet-nudge/releases/latest/download/runtime-manifest.json",
   "supportedRids": [
     "linux-x64",

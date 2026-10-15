@@ -22,7 +22,7 @@ description: Check for .NET updates and explain your options without changing an
 
 ## User approval
 
-- When offering a next step, read [Interactive questions](../nudge-maintain/references/interactive-questions.md). Call the host's native `AskUserQuestion` (Claude Code) or `ask_user` (Copilot) with one single-select question and concrete choices, not a choice menu in chat. If the tool is unavailable or the session is noninteractive, report only; never infer consent. A status-only request does not require a question.
+- When offering a next step, read [Interactive questions](../nudge-maintain/references/interactive-questions.md). Call the host's native `AskUserQuestion` (Claude Code) or `ask_user` (Copilot) with one single-select question and concrete choices, not a choice menu in chat. After a current update check with actionable evidence, offer one relevant question for NuGet, workloads, runtimes or host tools as well as SDKs, using the category routes. Respect suppressions and cooldowns for unsolicited suggestions; explicit report-only or cached-status requests do not require a question. If the tool is unavailable or the session is noninteractive, report only; never infer consent.
 - Assessment is not approval to change project files, install tooling, fetch candidate packages, or start a trial.
 - Before any supported mutating operation, state the exact target, files/tools affected, and execution scope, then obtain the user's approval.
 - Do not use a scan result as the revision token for a decision unless the current result includes that exact finding ID and revision.

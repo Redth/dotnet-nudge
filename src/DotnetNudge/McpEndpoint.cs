@@ -48,8 +48,15 @@ public sealed class NudgeTools(McpStateDirectory location)
         "interactive-question guidance and call the host's native AskUserQuestion (Claude Code) or " +
         "ask_user (Copilot) tool with one single-select question and 2-4 concrete choices including " +
         "Not now, not a choice menu in chat. Use short, friendly, plain-language questions and choices " +
-        "such as What's new?, Help me update and Remind me next week, as appropriate. Keep finding IDs, " +
-        "revision tokens, assessment labels and ISO timestamps out of user-facing text. Details are " +
+        "such as What's new?, Help me update and Remind me next week, as appropriate. " +
+        "For actionable NuGet package, workload, runtime and host-tool results, offer a relevant native " +
+        "question too, not SDK-only choices or a report that stops without a way forward. Bind each " +
+        "question to one exact package/tool and its evidenced candidate or issue. For deprecations or " +
+        "advisories without a candidate, offer help finding an alternative or fix, not a promised update. " +
+        "Configuration mismatches and existing graph changes are not available upgrades. Unknown, stale, " +
+        "blocked or suppressed results are report-only for unsolicited suggestions; respect reminder " +
+        "cooldowns and explicit report-only requests. " +
+        "Keep finding IDs, revision tokens, assessment labels and ISO timestamps out of user-facing text. Details are " +
         "read-only; Help me update requests a plan, not approval for changes or trials. Explain the " +
         "actual changes and ask before executing them. If the tool " +
         "is unavailable or the session is noninteractive, report only; never assume consent.";

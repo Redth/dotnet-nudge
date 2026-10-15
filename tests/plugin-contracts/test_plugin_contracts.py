@@ -106,7 +106,7 @@ class PluginManifestTests(unittest.TestCase):
             {
                 "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
                 "name": "dotnet-nudge",
-                "version": "0.2.4",
+                "version": "0.2.5",
                 "description": "A .NET maintenance plugin with shared skills and host-specific hooks; engine actions remain explicit.",
                 "author": {"name": "Redth"},
                 "repository": "https://github.com/Redth/dotnet-nudge",
@@ -160,7 +160,7 @@ class PluginManifestTests(unittest.TestCase):
 
         runtime = read_json(plugin_dir / "runtime-manifest.json")
         self.assertEqual(runtime["status"], "release-channel")
-        self.assertEqual(runtime["minimumVersion"], "1.0.3")
+        self.assertEqual(runtime["minimumVersion"], "1.0.4")
         self.assertEqual(runtime["artifacts"], [])
         self.assertEqual(runtime["releaseManifestUrl"],
                          "https://github.com/Redth/dotnet-nudge/releases/latest/download/runtime-manifest.json")
@@ -197,6 +197,21 @@ class PluginManifestTests(unittest.TestCase):
         self.assertIn("run `nudge_scan` / CLI `scan`", status_skill)
         self.assertIn("Read `coverage` as well as `findings`", status_skill)
         self.assertIn("automatic workload discovery isn't available yet", status_skill)
+        self.assertIn("After a current update check with actionable evidence", status_skill)
+        self.assertIn("using the category routes", status_skill)
+        questions = (plugin_dir / "skills/nudge-maintain/references/interactive-questions.md").read_text(
+            encoding="utf-8")
+        for kind in (
+            "package-update", "package-advisory", "package-deprecation",
+            "workload-set-update", "workload-missing", "workload-set-difference",
+            "workload-manifest-difference", "host-tool-incompatibility",
+            "local-runtime-security-servicing", "deployment-runtime-security-servicing",
+            "restored-graph-change",
+        ):
+            self.assertIn(f"`{kind}`", questions)
+        self.assertIn("Do not reserve the picker for SDK updates", questions)
+        self.assertIn("Help me find an alternative", questions)
+        self.assertIn("Do not ask a picker for every dependency", questions)
 
         decision_skill = (plugin_dir / "skills/nudge-preferences/SKILL.md").read_text(encoding="utf-8")
         self.assertIn(

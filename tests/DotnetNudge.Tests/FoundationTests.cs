@@ -567,6 +567,70 @@ public sealed class FoundationTests
     }
 
     [Fact]
+    public void NonSdkHookFindingsRequestCategoryAppropriateQuestionsForBothHosts()
+    {
+        var cases = new (string Kind, string? Candidate, string Guidance)[] {
+            ("package-update", "2.0.0", "get help updating that package"),
+            ("package-advisory", "2.0.0", "candidate is a verified fix without supporting evidence"),
+            ("package-advisory", null, "Help me find a fix"),
+            ("package-deprecation", null, "Help me find an alternative"),
+            ("workload-set-update", "10.0.200", "get help planning that exact set update"),
+            ("workload-set-difference", "10.0.100", "Help me check the mismatch"),
+            ("workload-manifest-difference", "10.0.2/10.0.100", "Help me check the mismatch"),
+            ("workload-missing", "android", "Help me plan installation"),
+            ("host-tool-incompatibility", null, "Help me check compatibility"),
+            ("local-runtime-security-servicing", "10.0.2", "does not update deployed apps"),
+            ("deployment-runtime-security-servicing", "10.0.2", "local runtime is not a deployment fix"),
+            ("restored-graph-change", "2.0.0", "not an available upgrade")
+        };
+        foreach (var host in new[] { "copilot", "claude" })
+        foreach (var (kind, candidate, guidance) in cases)
+        {
+            using var fixture = new Fixture();
+            using var state = fixture.State();
+            var finding = Finding() with {
+                Kind = kind, Candidate = candidate, Category = "package",
+                Scope = new("App.csproj", "net10.0", null)
+            };
+            var report = Report(fixture, finding);
+            state.Register(fixture.Root, TimeSpan.FromMinutes(15));
+            state.QueueScan(report.Workspace.WorkspaceId);
+            state.FinishScan(state.LeaseScan("scanner")!, "scanner", report, null,
+                NudgeState.WorkspaceFingerprint(fixture.Root));
+            var payload = JsonSerializer.Serialize(new { cwd = fixture.Root, session_id = "question" });
+            using var output = JsonDocument.Parse(HookAdapter.Handle(host, "post-tool-use", payload, state));
+            var container = host == "copilot" ? output.RootElement :
+                output.RootElement.GetProperty("hookSpecificOutput");
+            var context = container.GetProperty("additionalContext").GetString()!;
+            Assert.Contains(host == "copilot" ? "`ask_user`" : "`AskUserQuestion`", context);
+            Assert.Contains(guidance, context);
+            Assert.Contains("including Not now", context);
+            Assert.Contains("not approval to change files", context);
+            Assert.True(System.Text.Encoding.UTF8.GetByteCount(context) <= HookAdapter.ContextLimitBytes);
+            Assert.Null(state.Suppression(report.Workspace.RepositoryId, finding));
+            Assert.Equal("{}", HookAdapter.Handle(host, "post-tool-use", payload, state));
+        }
+    }
+
+    [Theory]
+    [InlineData(Assessment.Unknown)]
+    [InlineData(Assessment.Stale)]
+    [InlineData(Assessment.Blocked)]
+    public void PackageFindingsWithoutActionableEvidenceDoNotRequestQuestions(Assessment assessment)
+    {
+        using var fixture = new Fixture();
+        using var state = fixture.State();
+        var report = Report(fixture, Finding() with { Kind = "package-update", Assessment = assessment });
+        state.Register(fixture.Root, TimeSpan.FromMinutes(15));
+        state.QueueScan(report.Workspace.WorkspaceId);
+        state.FinishScan(state.LeaseScan("scanner")!, "scanner", report, null,
+            NudgeState.WorkspaceFingerprint(fixture.Root));
+        var payload = JsonSerializer.Serialize(new { cwd = fixture.Root, session_id = "question" });
+        Assert.Equal("{}", HookAdapter.Handle("copilot", "post-tool-use", payload, state));
+        Assert.Equal("{}", HookAdapter.Handle("claude", "post-tool-use", payload, state));
+    }
+
+    [Fact]
     public async Task CliFixtureRoundtripPersistsSuppression()
     {
         using var fixture = new Fixture();
