@@ -468,7 +468,7 @@ public sealed class FoundationTests
     }
 
     [Fact]
-    public async Task ConcurrentRoutineLeasesForDifferentSubjectsRespectRepositoryBudget()
+    public async Task ConcurrentRoutineLeasesForDifferentSubjectsRespectCategoryBudget()
     {
         using var fixture = new Fixture();
         var clock = new Clock();
@@ -483,6 +483,211 @@ public sealed class FoundationTests
         Assert.Single(results, value => value);
         clock.Now = clock.Now.AddMinutes(3);
         Assert.True(first.TryLease(repo, b, "copilot:retry", TimeSpan.FromMinutes(2)));
+    }
+
+    [Fact]
+    public async Task DifferentCategoriesHaveIndependentAtomicLeasesAndCooldowns()
+    {
+        using var fixture = new Fixture();
+        var clock = new Clock();
+        using var first = fixture.State(clock);
+        using var second = fixture.State(clock);
+        var sdk = Finding();
+        var package = sdk with {
+            Id = "package:a", SubjectKey = "package:a", Kind = "package-update", Category = "package"
+        };
+        var otherPackage = package with { Id = "package:b", SubjectKey = "package:b" };
+        var workload = sdk with {
+            Id = "workload:a", SubjectKey = "workload:a", Kind = "workload-set-update", Category = "workload"
+        };
+        var report = Report(fixture, sdk) with { Findings = [sdk, package, otherPackage, workload] };
+        first.Save(report);
+        var repo = report.Workspace.RepositoryId;
+        var results = await Task.WhenAll(
+            Task.Run(() => first.TryLease(repo, sdk, "copilot:a", TimeSpan.FromMinutes(2))),
+            Task.Run(() => second.TryLease(repo, package, "copilot:a", TimeSpan.FromMinutes(2))));
+        Assert.All(results, value => Assert.True(value));
+        Assert.False(first.TryLease(repo, otherPackage, "claude:b", TimeSpan.FromMinutes(2)));
+        first.MarkDelivered(repo, sdk, "copilot:a");
+        second.MarkDelivered(repo, package, "copilot:a");
+        var status = first.Status(repo, report.Workspace.WorktreeId, report.Workspace.WorkspaceId);
+        Assert.Equal("delivered-recently", status.Findings.Single(f => f.Finding.Id == sdk.Id).Suppression);
+        Assert.Equal("category-cooldown", status.Findings.Single(f => f.Finding.Id == otherPackage.Id).Suppression);
+        Assert.True(status.Findings.Single(f => f.Finding.Id == workload.Id).Eligible);
+        Assert.True(first.TryLease(repo, workload, "copilot:a", TimeSpan.FromMinutes(2)));
+        first.MarkDelivered(repo, workload, "copilot:a");
+        clock.Now = clock.Now.AddDays(1).AddSeconds(1);
+        Assert.False(first.TryLease(repo, otherPackage, "copilot:a", TimeSpan.FromMinutes(2)));
+        Assert.True(second.TryLease(repo, otherPackage, "claude:new", TimeSpan.FromMinutes(2)));
+    }
+
+    [Fact]
+    public void V3DeliveryMigrationPreservesLegacyCooldownsAndRecordsNewCategories()
+    {
+        using var fixture = new Fixture();
+        var clock = new Clock();
+        var report = Report(fixture, Finding());
+        var repo = report.Workspace.RepositoryId;
+        var database = Path.Combine(fixture.Root, "state", "state.sqlite");
+        Directory.CreateDirectory(Path.GetDirectoryName(database)!);
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection(
+            new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+            { DataSource = database, Pooling = false }.ToString()))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE schema_version(version INTEGER NOT NULL);
+                INSERT INTO schema_version VALUES(3);
+                CREATE TABLE deliveries (
+                  repository TEXT NOT NULL, subject TEXT NOT NULL, revision TEXT NOT NULL,
+                  owner TEXT NOT NULL, lease_until INTEGER NOT NULL, delivered INTEGER,
+                  PRIMARY KEY(repository,subject,revision));
+                INSERT INTO deliveries VALUES($r,'legacy','r1','old-session',$now,$now);
+                """;
+            command.Parameters.AddWithValue("$r", repo);
+            command.Parameters.AddWithValue("$now", clock.Now.ToUnixTimeSeconds());
+            command.ExecuteNonQuery();
+        }
+        using (var migrated = fixture.State(clock))
+        {
+            var package = Finding() with {
+                Id = "package:a", SubjectKey = "package:a", Category = "package"
+            };
+            migrated.Save(report with { Findings = [package] });
+            Assert.Equal("category-cooldown", Assert.Single(migrated.Status(repo,
+                report.Workspace.WorktreeId, report.Workspace.WorkspaceId).Findings).Suppression);
+            Assert.False(migrated.TryLease(repo, package, "new-session", TimeSpan.FromMinutes(2)));
+            clock.Now = clock.Now.AddDays(1).AddSeconds(1);
+            Assert.True(migrated.TryLease(repo, package, "new-session", TimeSpan.FromMinutes(2)));
+            migrated.MarkDelivered(repo, package, "new-session");
+            Assert.True(migrated.TryLease(repo, Finding(), "new-session", TimeSpan.FromMinutes(2)));
+        }
+        using var verify = new Microsoft.Data.Sqlite.SqliteConnection(
+            new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+            { DataSource = database, Pooling = false }.ToString());
+        verify.Open();
+        using var query = verify.CreateCommand();
+        query.CommandText = "SELECT version FROM schema_version";
+        Assert.Equal(4L, query.ExecuteScalar());
+        query.CommandText = "SELECT category FROM deliveries WHERE subject='legacy'";
+        Assert.Equal("*", query.ExecuteScalar());
+        query.CommandText = "SELECT category FROM deliveries WHERE subject='package:a'";
+        Assert.Equal("package", query.ExecuteScalar());
+    }
+
+    [Theory]
+    [InlineData("copilot")]
+    [InlineData("claude")]
+    public void HooksDeliverOneFindingPerActionableCategoryWithoutRepeatingQuestions(string host)
+    {
+        using var fixture = new Fixture();
+        using var state = fixture.State();
+        var findings = new[] { "sdk", "package", "workload", "runtime", "toolchain" }
+            .Select(category => Finding() with {
+                Id = "first-" + category, SubjectKey = "first-" + category, Category = category,
+                Kind = category switch {
+                    "package" => "package-update",
+                    "workload" => "workload-set-update",
+                    "runtime" => "local-runtime-security-servicing",
+                    "toolchain" => "host-tool-incompatibility",
+                    _ => "sdk-servicing"
+                }
+            }).ToArray();
+        var report = Report(fixture, findings[0]) with {
+            Findings = [.. findings, .. findings.Select(f => f with {
+                Id = "second-" + f.Category, SubjectKey = "second-" + f.Category, Priority = Priority.Low
+            })]
+        };
+        state.Register(fixture.Root, TimeSpan.FromMinutes(15));
+        state.QueueScan(report.Workspace.WorkspaceId);
+        state.FinishScan(state.LeaseScan("scanner")!, "scanner", report, null,
+            NudgeState.WorkspaceFingerprint(fixture.Root));
+        var payload = JsonSerializer.Serialize(new { cwd = fixture.Root, session_id = "categories" });
+        using var output = JsonDocument.Parse(HookAdapter.Handle(host, "session-start", payload, state));
+        var container = host == "copilot" ? output.RootElement : output.RootElement.GetProperty("hookSpecificOutput");
+        var context = container.GetProperty("additionalContext").GetString()!;
+        Assert.Contains("Ask a separate question for each delivered category, sequentially", context);
+        Assert.Contains("waiting for each answer", context);
+        foreach (var finding in findings)
+        {
+            Assert.Contains("finding ID " + finding.Id, context);
+            Assert.DoesNotContain("finding ID second-" + finding.Category, context);
+        }
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(context) <= HookAdapter.ContextLimitBytes);
+        Assert.Equal("{}", HookAdapter.Handle(host, "post-tool-use", payload, state));
+        var status = state.Status(report.Workspace.RepositoryId,
+            report.Workspace.WorktreeId, report.Workspace.WorkspaceId);
+        Assert.All(status.Findings.Where(f => f.Finding.Id.StartsWith("first-")),
+            f => Assert.Equal("delivered-recently", f.Suppression));
+        Assert.All(status.Findings.Where(f => f.Finding.Id.StartsWith("second-")),
+            f => Assert.Equal("category-cooldown", f.Suppression));
+    }
+
+    [Fact]
+    public void SuppressedCategoryDoesNotPreventQuestionsForOtherCategories()
+    {
+        foreach (var action in new[] {
+            DecisionAction.Snooze, DecisionAction.SkipVersion, DecisionAction.DisableCategory
+        })
+        {
+            using var fixture = new Fixture();
+            var clock = new Clock();
+            using var state = fixture.State(clock);
+            var sdk = Finding();
+            var package = sdk with {
+                Id = "package:a", SubjectKey = "package:a", Kind = "package-update", Category = "package"
+            };
+            var workload = sdk with {
+                Id = "workload:a", SubjectKey = "workload:a", Kind = "workload-set-update", Category = "workload"
+            };
+            var report = Report(fixture, sdk) with { Findings = [sdk, package, workload] };
+            state.Register(fixture.Root, TimeSpan.FromMinutes(15));
+            state.QueueScan(report.Workspace.WorkspaceId);
+            state.FinishScan(state.LeaseScan("scanner")!, "scanner", report, null,
+                NudgeState.WorkspaceFingerprint(fixture.Root));
+            state.Decide(report.Workspace.RepositoryId, report.Workspace.WorkspaceId,
+                package.Id, package.Revision, action,
+                action == DecisionAction.Snooze ? clock.Now.AddDays(7) : null);
+            var payload = JsonSerializer.Serialize(new { cwd = fixture.Root, session_id = "categories" });
+            using var output = JsonDocument.Parse(HookAdapter.Handle("copilot", "post-tool-use", payload, state));
+            var context = output.RootElement.GetProperty("additionalContext").GetString()!;
+            Assert.Contains("finding ID " + sdk.Id, context);
+            Assert.Contains("finding ID " + workload.Id, context);
+            Assert.DoesNotContain("finding ID " + package.Id, context);
+        }
+    }
+
+    [Fact]
+    public void HookContextCapLeavesOmittedCategoriesEligibleForLaterDelivery()
+    {
+        using var fixture = new Fixture();
+        using var state = fixture.State();
+        var findings = new[] { "sdk", "package", "workload", "runtime", "toolchain" }
+            .Select(category => Finding() with {
+                Id = category + new string('x', 850), SubjectKey = category, Category = category
+            }).ToArray();
+        var report = Report(fixture, findings[0]) with { Findings = findings };
+        state.Register(fixture.Root, TimeSpan.FromMinutes(15));
+        state.QueueScan(report.Workspace.WorkspaceId);
+        state.FinishScan(state.LeaseScan("scanner")!, "scanner", report, null,
+            NudgeState.WorkspaceFingerprint(fixture.Root));
+        var payload = JsonSerializer.Serialize(new { cwd = fixture.Root, session_id = "bounded" });
+        var delivered = new HashSet<string>();
+        for (var attempt = 0; attempt < findings.Length && delivered.Count < findings.Length; attempt++)
+        {
+            using var output = JsonDocument.Parse(HookAdapter.Handle("copilot", "post-tool-use", payload, state));
+            var context = output.RootElement.GetProperty("additionalContext").GetString()!;
+            Assert.True(System.Text.Encoding.UTF8.GetByteCount(context) <= HookAdapter.ContextLimitBytes);
+            foreach (var finding in findings.Where(f => context.Contains("finding ID " + f.Id)))
+                Assert.True(delivered.Add(finding.Category));
+            if (attempt == 0) Assert.InRange(delivered.Count, 1, findings.Length - 1);
+            var status = state.Status(report.Workspace.RepositoryId,
+                report.Workspace.WorktreeId, report.Workspace.WorkspaceId);
+            Assert.All(status.Findings.Where(f => !delivered.Contains(f.Finding.Category)),
+                f => Assert.True(f.Eligible));
+        }
+        Assert.Equal(findings.Length, delivered.Count);
     }
 
     [Fact]

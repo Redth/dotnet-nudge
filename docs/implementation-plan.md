@@ -917,7 +917,10 @@ Proposed reminder defaults:
 - Acknowledged unresolved critical findings: 72 hours; high: 7 days;
   lower-severity security findings: 14 days, unless the user chose another period.
 - A delivered suggestion without an answer: 7 days for the same subject.
-- At most one routine question per session and one per repository per 24 hours.
+- At most one routine question per category per session and one per
+  repository/category per 24 hours. Ask separately for SDK, NuGet, workload,
+  runtime and host-tool categories with actionable evidence; group findings
+  within a category rather than asking once per dependency.
 
 New advisories, meaningful severity escalation, or a newly available fix can
 invalidate a **version-specific** skip and produce one new eligible finding,

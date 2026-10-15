@@ -38,22 +38,17 @@ public static class HookAdapter
             state.QueueScan(workspace);
         if (host == "copilot" && eventName == "prompt-submit") return "{}";
         var status = state.Status(repository, worktree, workspace);
-        var finding = status.Findings.Where(f => f.Eligible &&
-            f.Finding.Assessment is Assessment.Confirmed or Assessment.Partial)
-            .OrderBy(f => f.Finding.Priority).Select(f => f.Finding)
-            .FirstOrDefault(f => state.TryLease(repository, f, owner, TimeSpan.FromMinutes(2)));
-        if (finding is null) return "{}";
         var questionTool = host == "copilot" ? "ask_user" : "AskUserQuestion";
-        var context = $"dotnet-nudge internal context (not user-facing text): {finding.Kind}; " +
-            $"finding ID {finding.Id}; revision {finding.Revision}; current {finding.Current}; " +
-            $"candidate {finding.Candidate}; assessment {finding.Assessment}. " +
+        var context =
             "Read current evidence with `nudge_context` or `dotnet-nudge status --workspace PATH --json`. " +
             "Follow the nudge-maintain skill's interactive-question guidance. " +
             "For this newly hook-delivered finding, delivered-recently is a delivery cooldown, not a " +
             "user answer; offer it once if the current ID and revision still match. " +
             $"When offering this finding, call the host's native `{questionTool}` tool with one " +
             "single-select question and 2-4 concrete choices, including Not now; do not print a choice menu in chat. " +
-            QuestionGuidance(finding) +
+            "Ask a separate question for each delivered category, sequentially, waiting for each answer. " +
+            "Do not stop after the SDK question or ask once per dependency. Each answer applies only to " +
+            "its own described category and exact findings; recheck evidence before the next question. " +
             "Use short, friendly, plain-language questions and choices such as What's new?, Help me update, " +
             "Remind me next week and Not now, as appropriate. Keep finding IDs, revision tokens, assessment " +
             "labels and ISO timestamps out of user-facing text. Details are read-only; Help me update requests " +
@@ -61,8 +56,31 @@ public static class HookAdapter
             "and ask before executing them. Obtain explicit approval for exact reminder decisions in plain " +
             "language before recording them. If the question tool is unavailable or the session " +
             "is noninteractive, report the finding without assuming an answer or recording a decision.";
-        if (Encoding.UTF8.GetByteCount(context) > ContextLimitBytes)
-            throw new InvalidDataException("Hook context exceeds 4 KiB.");
+        var delivered = new List<Finding>();
+        foreach (var category in status.Findings.Where(f => f.Eligible &&
+            f.Finding.Assessment is Assessment.Confirmed or Assessment.Partial)
+            .OrderBy(f => f.Finding.Priority).Select(f => f.Finding)
+            .GroupBy(f => f.Category))
+        {
+            foreach (var finding in category)
+            {
+                var detail = $" dotnet-nudge internal context (not user-facing text): {finding.Kind}; " +
+                    $"category {finding.Category}; finding ID {finding.Id}; revision {finding.Revision}; " +
+                    $"current {finding.Current}; candidate {finding.Candidate}; assessment {finding.Assessment}. " +
+                    QuestionGuidance(finding);
+                if (Encoding.UTF8.GetByteCount(context + detail) > ContextLimitBytes)
+                {
+                    if (delivered.Count == 0)
+                        throw new InvalidDataException("Hook context exceeds 4 KiB.");
+                    continue;
+                }
+                if (!state.TryLease(repository, finding, owner, TimeSpan.FromMinutes(2))) continue;
+                context += detail;
+                delivered.Add(finding);
+                break;
+            }
+        }
+        if (delivered.Count == 0) return "{}";
         var output = host == "copilot"
             ? JsonSerializer.Serialize(new { additionalContext = context })
             : JsonSerializer.Serialize(new
@@ -78,7 +96,8 @@ public static class HookAdapter
                     additionalContext = context
                 }
             });
-        state.MarkDelivered(repository, finding, owner);
+        foreach (var finding in delivered)
+            state.MarkDelivered(repository, finding, owner);
         return output;
     }
 

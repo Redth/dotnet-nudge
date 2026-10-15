@@ -7,7 +7,7 @@ namespace DotnetNudge.Core;
 
 public sealed class NudgeState : IDisposable
 {
-    const int StateSchemaVersion = 3;
+    const int StateSchemaVersion = 4;
     const long MaintenanceRefreshSeconds = 6 * 60 * 60;
     public string DirectoryPath { get; }
     readonly SqliteConnection connection;
@@ -42,12 +42,12 @@ public sealed class NudgeState : IDisposable
             command.Transaction = migration;
             command.CommandText = """
             CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
-            INSERT INTO schema_version SELECT 3 WHERE NOT EXISTS (SELECT 1 FROM schema_version);
+            INSERT INTO schema_version SELECT 4 WHERE NOT EXISTS (SELECT 1 FROM schema_version);
             """;
             command.ExecuteNonQuery();
             command.CommandText = "SELECT version FROM schema_version";
             var version = Convert.ToInt32(command.ExecuteScalar());
-            if (version is not (1 or 2 or StateSchemaVersion))
+            if (version is not (1 or 2 or 3 or StateSchemaVersion))
                 throw new InvalidDataException("Unsupported dotnet-nudge state schema; preserve the database and use a compatible version.");
             command.CommandText = """
             CREATE TABLE IF NOT EXISTS workspace_snapshots (
@@ -68,6 +68,7 @@ public sealed class NudgeState : IDisposable
             CREATE TABLE IF NOT EXISTS deliveries (
               repository TEXT NOT NULL, subject TEXT NOT NULL, revision TEXT NOT NULL,
               owner TEXT NOT NULL, lease_until INTEGER NOT NULL, delivered INTEGER,
+              category TEXT NOT NULL DEFAULT '*',
               PRIMARY KEY(repository, subject, revision)
             );
             CREATE TABLE IF NOT EXISTS metadata (
@@ -143,6 +144,21 @@ public sealed class NudgeState : IDisposable
                     """;
                 command.ExecuteNonQuery();
             }
+            using (var columns = connection.CreateCommand())
+            {
+                columns.Transaction = migration;
+                columns.CommandText = "PRAGMA table_info(deliveries)";
+                var hasCategory = false;
+                using (var reader = columns.ExecuteReader())
+                    while (reader.Read()) hasCategory |= reader.GetString(1) == "category";
+                if (!hasCategory)
+                {
+                    columns.CommandText = "ALTER TABLE deliveries ADD COLUMN category TEXT NOT NULL DEFAULT '*'";
+                    columns.ExecuteNonQuery();
+                }
+            }
+            command.CommandText = "UPDATE schema_version SET version=4";
+            command.ExecuteNonQuery();
             command.CommandText = """
                 INSERT OR IGNORE INTO version_skips(repository,subject,category,candidate,revision,recorded)
                 SELECT repository,subject,category,candidate,revision,recorded FROM decisions
@@ -288,15 +304,17 @@ public sealed class NudgeState : IDisposable
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT subject,revision,lease_until,delivered FROM deliveries
-            WHERE repository=$r AND (subject=$s OR delivered>$day OR
-              (delivered IS NULL AND lease_until>$now))
+            WHERE repository=$r AND (subject=$s OR
+              ((category=$c OR category='*') AND
+                (delivered>$day OR (delivered IS NULL AND lease_until>$now))))
             """;
         command.Parameters.AddWithValue("$r", repository);
         command.Parameters.AddWithValue("$s", finding.SubjectKey);
+        command.Parameters.AddWithValue("$c", finding.Category);
         command.Parameters.AddWithValue("$day", now - 86400);
         command.Parameters.AddWithValue("$now", now);
         var sameSubject = false;
-        var repositoryCooldown = false;
+        var categoryCooldown = false;
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
@@ -313,10 +331,10 @@ public sealed class NudgeState : IDisposable
                 (delivered > now - 7 * 86400 || (delivered is null && leaseUntil > now)))
                 sameSubject = true;
             if (delivered > now - 86400 || (delivered is null && leaseUntil > now))
-                repositoryCooldown = true;
+                categoryCooldown = true;
         }
         if (finding.Priority is Priority.Medium or Priority.Low)
-            return sameSubject ? "subject-cooldown" : repositoryCooldown ? "repository-cooldown" : null;
+            return sameSubject ? "subject-cooldown" : categoryCooldown ? "category-cooldown" : null;
         return null;
     }
 
@@ -478,13 +496,16 @@ public sealed class NudgeState : IDisposable
                 SELECT COUNT(*) FROM deliveries WHERE repository=$r
                 AND (
                   (delivered IS NOT NULL AND
-                    (owner=$owner OR delivered>$day OR (subject=$s AND delivered>$week)))
-                  OR (delivered IS NULL AND lease_until>$now)
+                    (((category=$c OR category='*') AND (owner=$owner OR delivered>$day))
+                      OR (subject=$s AND delivered>$week)))
+                  OR (delivered IS NULL AND lease_until>$now AND
+                    (category=$c OR category='*' OR subject=$s))
                 )
                 """;
             command.Parameters.AddWithValue("$r", repository);
             command.Parameters.AddWithValue("$owner", owner);
             command.Parameters.AddWithValue("$s", finding.SubjectKey);
+            command.Parameters.AddWithValue("$c", finding.Category);
             command.Parameters.AddWithValue("$day", now - 86400);
             command.Parameters.AddWithValue("$week", now - 7 * 86400);
             command.Parameters.AddWithValue("$now", now);
@@ -492,16 +513,17 @@ public sealed class NudgeState : IDisposable
             command.Parameters.Clear();
         }
         command.CommandText = """
-            INSERT INTO deliveries(repository,subject,revision,owner,lease_until,delivered)
-            VALUES($r,$s,$v,$owner,$until,NULL)
+            INSERT INTO deliveries(repository,subject,revision,owner,lease_until,delivered,category)
+            VALUES($r,$s,$v,$owner,$until,NULL,$c)
             ON CONFLICT(repository,subject,revision) DO UPDATE
-              SET owner=$owner,lease_until=$until
+              SET owner=$owner,lease_until=$until,category=$c
               WHERE deliveries.lease_until <= $now AND
                 (deliveries.delivered IS NULL OR deliveries.delivered <= $retry)
             """;
         command.Parameters.AddWithValue("$r", repository);
         command.Parameters.AddWithValue("$s", finding.SubjectKey);
         command.Parameters.AddWithValue("$v", finding.Revision);
+        command.Parameters.AddWithValue("$c", finding.Category);
         command.Parameters.AddWithValue("$owner", owner);
         command.Parameters.AddWithValue("$until", now + (long)duration.TotalSeconds);
         command.Parameters.AddWithValue("$now", now);

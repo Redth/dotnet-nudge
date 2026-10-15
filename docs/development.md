@@ -17,7 +17,7 @@ Replace `osx-arm64` with your machine's runtime identifier. The executable is
 6.14.3 alongside Microsoft.Data.Sqlite. Data is stored in
 `<OS application data>/dotnet-nudge/state.sqlite`, overridden by
 `NUDGE_STATE_DIR` or `--state-dir PATH`. Do not place personal decisions in Git.
-SQLite state schema v3 migrates v1/v2 snapshots, queued scans, and version skips in
+SQLite state schema v4 migrates v1/v2/v3 snapshots, queued scans, version skips and delivery categories in
 place. An unsupported schema version raises an error without deleting state.
 
 ## CLI and versioned JSON
@@ -61,10 +61,15 @@ pins within one worktree do not collide, while a pin keeps its identity across
 worktrees. Non-Git folders hash their canonical path. Source fixture tests can
 set `NUDGE_RELEASES_DIR` to a directory
 containing `releases-index.json` and `<channel>/releases.json`.
-Routine delivery is lease-atomic across sessions: one per session, no more
-than one per repository per 24 hours, seven days between questions on the
+Routine delivery is lease-atomic across sessions: one per category per session, no more
+than one per repository/category per 24 hours, seven days between questions on the
 same subject, with an expiring two-minute claim. A context delivery is not
 evidence that the user saw or accepted the suggestion.
+
+Legacy deliveries without a category retain their previous repository-wide
+cooldown until it expires; migration does not erase delivery history or
+durable preferences. New deliveries record their finding category, so an SDK
+reminder does not suppress NuGet, workload, runtime or host-tool reminders.
 
 Core contract `Contract.Version = 1` uses camelCase property names and
 kebab-case enums. Public types in `DotnetNudge.Core`:

@@ -191,16 +191,22 @@ Questions apply to NuGet updates/advisories/deprecations, workload and host-tool
 issues, and local/deployment runtime servicing, not only SDK updates. Hook
 context supplies finding-specific routing, MCP descriptions reinforce it, and
 the shared question reference specifies category-specific questions and choices.
-A current update check can end with one relevant native question; explicit
-report-only/cached-status requests remain reports. Prioritize a relevant
-actionable finding rather than asking once per dependency.
+A current update check can lead to one native question per actionable category:
+SDK, NuGet (`package`), workload, runtime, and host tools (`toolchain`). Ask
+sequentially, waiting for each answer, and group findings within a category
+rather than asking once per dependency. Explicit report-only/cached-status
+requests remain reports. Prioritize higher-priority categories, but do not stop
+after asking about SDKs when another category has actionable evidence. An
+answer applies only to its described findings, not to every category.
 
 Deprecations and advisories without a candidate offer help finding an
 alternative or fix instead of promising an update. Workload mismatches and
 already-observed graph changes are not upgrades. Offline workload evidence is
 not live discovery; local runtime installation is not a deployment fix.
 Unknown, blocked or stale coverage alone does not authorize an update prompt.
-These routes preserve the shared repository delivery limits and suppressions.
+These routes preserve subject cooldowns and durable suppressions while making
+routine delivery limits category-specific: one per category per session and
+one per repository/category per 24 hours.
 
 `What's new?` is read-only. `Help me update` leads to a supported plan and
 approval of its actual changes, not immediate editing or installation.
@@ -214,10 +220,17 @@ This is host-agent guidance, not a new hook output schema or server-side MCP
 elicitation implementation. Hooks and MCP never invoke a host tool themselves.
 If the tool is unavailable, denied or the session is noninteractive, report the
 evidence without inferring consent or executing an action. Existing delivery
-leases/cooldowns are unchanged; context delivery does not prove that a question
+leases are still atomic across sessions; context delivery does not prove that a question
 was shown. A freshly hook-delivered ID/revision may be offered once despite its
 `delivered-recently` status, which records that context delivery, not an answer.
 Stale evidence and durable snooze/skip/mute decisions still prevent unsolicited
 questions. Contract and protocol tests check routing and schemas, not live GUI
 rendering or model compliance. The headless acceptance above does not certify
 interactive question presentation.
+
+Hook context can contain one leased finding per actionable category within the
+4 KiB cap, with shared instructions to ask separate sequential questions. If
+the cap leaves a category out, it is not leased or marked delivered and can be
+offered on a later hook. Legacy uncategorized delivery rows retain their
+previous repository-wide cooldown until it expires; new delivery rows carry
+categories.

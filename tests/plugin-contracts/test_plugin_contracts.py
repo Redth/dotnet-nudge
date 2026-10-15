@@ -106,7 +106,7 @@ class PluginManifestTests(unittest.TestCase):
             {
                 "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
                 "name": "dotnet-nudge",
-                "version": "0.2.5",
+                "version": "0.2.6",
                 "description": "A .NET maintenance plugin with shared skills and host-specific hooks; engine actions remain explicit.",
                 "author": {"name": "Redth"},
                 "repository": "https://github.com/Redth/dotnet-nudge",
@@ -160,7 +160,7 @@ class PluginManifestTests(unittest.TestCase):
 
         runtime = read_json(plugin_dir / "runtime-manifest.json")
         self.assertEqual(runtime["status"], "release-channel")
-        self.assertEqual(runtime["minimumVersion"], "1.0.4")
+        self.assertEqual(runtime["minimumVersion"], "1.0.5")
         self.assertEqual(runtime["artifacts"], [])
         self.assertEqual(runtime["releaseManifestUrl"],
                          "https://github.com/Redth/dotnet-nudge/releases/latest/download/runtime-manifest.json")
@@ -212,6 +212,10 @@ class PluginManifestTests(unittest.TestCase):
         self.assertIn("Do not reserve the picker for SDK updates", questions)
         self.assertIn("Help me find an alternative", questions)
         self.assertIn("Do not ask a picker for every dependency", questions)
+        self.assertIn("Ask a separate question for each category with actionable findings", questions)
+        self.assertIn("wait for each answer before presenting the next category", questions)
+        self.assertIn("one per category per session", " ".join(questions.split()))
+        self.assertIn("record its individual revision-bound decision", questions)
 
         decision_skill = (plugin_dir / "skills/nudge-preferences/SKILL.md").read_text(encoding="utf-8")
         self.assertIn(

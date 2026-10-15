@@ -50,8 +50,10 @@ public sealed class NudgeTools(McpStateDirectory location)
         "Not now, not a choice menu in chat. Use short, friendly, plain-language questions and choices " +
         "such as What's new?, Help me update and Remind me next week, as appropriate. " +
         "For actionable NuGet package, workload, runtime and host-tool results, offer a relevant native " +
-        "question too, not SDK-only choices or a report that stops without a way forward. Bind each " +
-        "question to one exact package/tool and its evidenced candidate or issue. For deprecations or " +
+        "question too, not SDK-only choices or a report that stops without a way forward. Ask a separate " +
+        "question for each actionable category, sequentially, waiting for each answer; do not stop after " +
+        "SDKs or ask once per dependency. Bind each question to its described category and exact " +
+        "findings; each answer authorizes only that scope. For deprecations or " +
         "advisories without a candidate, offer help finding an alternative or fix, not a promised update. " +
         "Configuration mismatches and existing graph changes are not available upgrades. Unknown, stale, " +
         "blocked or suppressed results are report-only for unsolicited suggestions; respect reminder " +

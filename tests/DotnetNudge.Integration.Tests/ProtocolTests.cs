@@ -123,6 +123,9 @@ public sealed class ProtocolTests
                 Assert.Contains("What's new?, Help me update and Remind me next week", description);
                 Assert.Contains("actionable NuGet package, workload, runtime and host-tool results", description);
                 Assert.Contains("not SDK-only choices", description);
+                Assert.Contains("Ask a separate question for each actionable category, sequentially", description);
+                Assert.Contains("waiting for each answer", description);
+                Assert.Contains("each answer authorizes only that scope", description);
                 Assert.Contains("advisories without a candidate", description);
                 Assert.Contains("respect reminder cooldowns and explicit report-only requests", description);
                 Assert.Contains("Keep finding IDs, revision tokens, assessment labels and ISO timestamps out of user-facing text", description);

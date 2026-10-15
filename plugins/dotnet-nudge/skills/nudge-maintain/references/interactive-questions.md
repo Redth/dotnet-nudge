@@ -77,16 +77,41 @@ available tools:
 
 ## Apply questions to every maintenance category
 
-Do not reserve the picker for SDK updates. After an actionable package or
-toolchain assessment, or a newly delivered eligible hook finding, offer one
-focused native question about that exact dependency or tool. Reading a tool
+Do not reserve the picker for SDK updates. After an actionable assessment or
+newly delivered hook findings, offer a focused native question for each
+actionable category. Reading a tool
 result is not enough: invoke the question tool rather than ending with a list
 of updates and "let me know." An explicit report-only request remains report-only.
 
 Use the finding's scope and current evidence to name the package/tool, project
 when relevant, and exact current/candidate versions. Never identify a NuGet
 package update as an SDK update or combine unrelated dependencies into one
-approval. Use these routes only when evidence and supported next steps permit:
+approval. Group actionable findings by their reminder category (`sdk`,
+`package` for NuGet, `workload`, `runtime`, `toolchain` for host tools).
+Ask a separate question for each category with actionable findings, not just
+the category containing the highest-priority finding. Ask sequentially and
+wait for each answer before presenting the next category, so SDK, NuGet and
+workload updates can result in three separate questions.
+
+Within a category, summarize the relevant updates together rather than asking
+once per dependency. For example: "There are updates for Newtonsoft.Json and
+Serilog in this project. Want to hear what's changed or get help planning the
+package updates?" Offer What's new?, Help me update, Remind me next week and
+Not now when supported. Bind the question internally to the exact findings,
+versions and scopes it describes. If the category mixes updates with issues
+without a candidate, use "Tell me more" and "Help me plan next steps" rather
+than promising that every dependency has a verified update.
+
+These category choices request information or planning for that described set;
+they do not approve changes to all dependencies in the category. For a reminder
+choice covering several described findings, re-read each exact finding and
+record its individual revision-bound decision. Do not silently mute the whole
+category or apply the answer to findings that were not described. If a decision
+fails partway through, report which reminders were saved and which were not;
+do not claim the category was fully snoozed or transfer the answer to new evidence.
+
+Use these routes to choose accurate wording within each category, only when
+evidence and supported next steps permit:
 
 | Finding | Question and choices |
 | --- | --- |
@@ -108,11 +133,19 @@ request investigation or a plan only, just like "Help me update." Separately
 approve new metadata acquisition, file edits, downloads, installs and trial
 execution. Do not skip package-source approval or the human trial approval.
 
-If several findings exist, prioritize security and other higher-priority
-actionable findings, then present one relevant question at a natural boundary.
-Do not ask a picker for every dependency or stack multiple questions to bypass
-the repository's routine-delivery limit. New categories do not get separate
-cooldowns, and an answer for one dependency never authorizes another.
+If several categories have findings, ask about higher-priority categories
+first, then continue through the remaining actionable categories at a natural
+boundary. "Not now" for SDKs does not decline NuGet or workloads; an explicit
+"stop asking" or "not now for all of these" ends the sequence without inventing
+durable preferences. A missing answer, dismissal or unavailable question tool
+does not authorize proceeding with a change or force another picker.
+
+Do not ask a picker for every dependency. Routine delivery is limited to one
+per category per session and one per repository/category per 24 hours; the
+seven-day subject cooldown and explicit snoozes/skips/mutes still apply.
+An SDK delivery must not suppress an otherwise eligible NuGet or workload
+category. Ask only for categories with actionable evidence, not a picker
+for clean or unknown-only coverage.
 
 For a question about reminder preferences, "Stop SDK reminders" or "Turn SDK
 reminders back on" can map to category disable/enable. Explain that it affects
@@ -195,9 +228,10 @@ an unsolicited question, even after a hook. An explicit request to inspect a
 suppressed finding can still be answered read-only.
 
 Keep routine suggestions at a natural task boundary, not in the middle of
-unrelated work. A request to check for updates may end with one relevant
-update question when actionable evidence exists, including for NuGet and
-toolchains; it does not itself authorize a change or reminder decision.
+unrelated work. A request to check for updates can lead to separate category
+questions when actionable evidence exists, including for NuGet and toolchains;
+it does not itself authorize a change or reminder decision. Re-read current
+status before each category question and honor its reminder suppressions.
 An explicit request for just a report or cached status does not require a question.
 Do not repeat the same question after answering "What's new?" unless the user
 asks to proceed or another real decision is needed.
