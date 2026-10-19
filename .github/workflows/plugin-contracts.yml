@@ -10,6 +10,7 @@ on:
       - "docs/plugin-development.md"
       - "README.md"
       - ".github/workflows/plugin-contracts.yml"
+      - ".github/extensions/**"
   pull_request:
     paths:
       - ".claude-plugin/**"
@@ -19,6 +20,7 @@ on:
       - "docs/plugin-development.md"
       - "README.md"
       - ".github/workflows/plugin-contracts.yml"
+      - ".github/extensions/**"
   workflow_dispatch:
 
 jobs:
@@ -40,3 +42,5 @@ jobs:
         run: python -m unittest discover -s tests/plugin-contracts -v
       - name: Run offline runtime bootstrap tests
         run: node --test tests/plugin-contracts/runtime.test.cjs
+      - name: Run dashboard and optional native hook contracts
+        run: node --test tests/plugin-contracts/dashboard.test.mjs tests/plugin-contracts/copilot-hooks.test.mjs

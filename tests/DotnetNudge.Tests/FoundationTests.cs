@@ -58,6 +58,44 @@ public sealed class FoundationTests
         new(1, WorkspaceDiscovery.Discover(fixture.Root), [finding], [], DateTimeOffset.UtcNow);
 
     [Fact]
+    public async Task SdkOverviewSurvivesCachedStatusEvenWithoutAnUpdateFinding()
+    {
+        using var fixture = new Fixture();
+        fixture.File("global.json", """{"sdk":{"version":"10.0.113","rollForward":"latestPatch","allowPrerelease":false}}""");
+        var report = await new NudgeScanner(new Releases(Index, Channel)).ScanAsync(fixture.Root);
+        Assert.Empty(report.Findings);
+        var declared = Assert.Single(report.Sdks!.Declarations);
+        Assert.Equal("10.0.113", declared.Version);
+        Assert.Equal("latestPatch", declared.RollForward);
+        Assert.Empty(report.Sdks.EffectiveSdks);
+        Assert.Null(report.Sdks.InstalledSdks);
+        report = report with
+        {
+            Sdks = report.Sdks with
+            {
+                EffectiveSdks = new Dictionary<string, string> { ["."] = "10.0.113" },
+                InstalledSdks = "10.0.113 [/sdk]\n10.0.401 [/sdk]\n"
+            }
+        };
+        using var state = fixture.State();
+        state.Save(report);
+        var status = state.Status(report.Workspace.RepositoryId, report.Workspace.WorktreeId,
+            report.Workspace.WorkspaceId);
+        Assert.Empty(status.Findings);
+        Assert.Equal("10.0.113", Assert.Single(status.Sdks!.Declarations).Version);
+        Assert.Equal("10.0.113", status.Sdks.EffectiveSdks["."]);
+        Assert.Contains("10.0.401", status.Sdks.InstalledSdks);
+        var json = JsonSerializer.Serialize(status, Contract.Json);
+        Assert.Equal("10.0.113", JsonSerializer.Deserialize<StatusReport>(json, Contract.Json)!
+            .Sdks!.EffectiveSdks["."]);
+        var legacy = JsonSerializer.Serialize(new
+        {
+            report.SchemaVersion, report.Workspace, report.Findings, report.Coverage, report.ScannedAt
+        }, Contract.Json);
+        Assert.Null(JsonSerializer.Deserialize<ScanReport>(legacy, Contract.Json)!.Sdks);
+    }
+
+    [Fact]
     public void MetadataRevalidationPreservesBodyFetchProvenance()
     {
         using var fixture = new Fixture();
@@ -775,10 +813,13 @@ public sealed class FoundationTests
     public void NonSdkHookFindingsRequestCategoryAppropriateQuestionsForBothHosts()
     {
         var cases = new (string Kind, string? Candidate, string Guidance)[] {
-            ("package-update", "2.0.0", "get help updating that package"),
+            ("package-update", "2.0.0", "all packages, vulnerable only, or a report to choose from"),
             ("package-advisory", "2.0.0", "candidate is a verified fix without supporting evidence"),
             ("package-advisory", null, "Help me find a fix"),
             ("package-deprecation", null, "Help me find an alternative"),
+            ("agent-helper-recommendation", "1.0.0", "a match does not prove a helper is missing"),
+            ("agent-helper-update", "1.0.0", "no plugin, skill, MCP or LSP update/activation"),
+            ("agent-helper-fit-review", null, "Missing context is not proof of disuse"),
             ("workload-set-update", "10.0.200", "get help planning that exact set update"),
             ("workload-set-difference", "10.0.100", "Help me check the mismatch"),
             ("workload-manifest-difference", "10.0.2/10.0.100", "Help me check the mismatch"),
@@ -810,11 +851,33 @@ public sealed class FoundationTests
             Assert.Contains(host == "copilot" ? "`ask_user`" : "`AskUserQuestion`", context);
             Assert.Contains(guidance, context);
             Assert.Contains("including Not now", context);
+            Assert.Contains("dashboard only if its canvas and bidirectional actions are advertised", context);
             Assert.Contains("not approval to change files", context);
             Assert.True(System.Text.Encoding.UTF8.GetByteCount(context) <= HookAdapter.ContextLimitBytes);
             Assert.Null(state.Suppression(report.Workspace.RepositoryId, finding));
             Assert.Equal("{}", HookAdapter.Handle(host, "post-tool-use", payload, state));
         }
+    }
+
+    [Fact]
+    public void HelperNudgesDoNotApplyAnotherHostsInstalledInventory()
+    {
+        using var fixture = new Fixture();
+        using var state = fixture.State();
+        var finding = Finding() with { Kind = "agent-helper-update", Category = "agent-tools" };
+        var report = Report(fixture, finding);
+        report = report with
+        {
+            AgentTools = new(1, report.Workspace.WorkspaceId, DateTimeOffset.UtcNow, [],
+                new(1, report.Workspace.WorkspaceId, "claude", DateTimeOffset.UtcNow, []), [], [])
+        };
+        state.Register(fixture.Root, TimeSpan.FromMinutes(15));
+        state.QueueScan(report.Workspace.WorkspaceId);
+        state.FinishScan(state.LeaseScan("helper-scanner")!, "helper-scanner", report, null,
+            NudgeState.WorkspaceFingerprint(fixture.Root));
+        var payload = JsonSerializer.Serialize(new { cwd = fixture.Root, session_id = "helper-host" });
+        Assert.Equal("{}", HookAdapter.Handle("copilot", "post-tool-use", payload, state));
+        Assert.Contains("agent helper", HookAdapter.Handle("claude", "post-tool-use", payload, state));
     }
 
     [Theory]
@@ -844,6 +907,7 @@ public sealed class FoundationTests
         var metadata = Path.Combine(fixture.Root, "metadata");
         fixture.File("metadata/releases-index.json", Index.Replace("https://example.invalid", "https://example.invalid"));
         fixture.File("metadata/10.0/releases.json", Channel);
+        var helperCatalog = fixture.File("metadata/agent-catalogs.json", "[]");
         var state = Path.Combine(fixture.Root, "state");
         var scan = await Cli("scan", "--workspace", fixture.Root, "--state-dir", state, "--json");
         using var parsed = JsonDocument.Parse(scan);
@@ -874,6 +938,7 @@ public sealed class FoundationTests
             psi.ArgumentList.Add("--");
             foreach (var argument in arguments) psi.ArgumentList.Add(argument);
             psi.Environment["NUDGE_RELEASES_DIR"] = metadata;
+            psi.Environment["NUDGE_AGENT_CATALOG_FILE"] = helperCatalog;
             using var process = Process.Start(psi)!;
             var stdout = await process.StandardOutput.ReadToEndAsync();
             var stderr = await process.StandardError.ReadToEndAsync();

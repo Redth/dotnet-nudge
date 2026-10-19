@@ -16,6 +16,8 @@ static async Task<int> Run(string[] args)
             scan --workspace PATH [--state-dir PATH] --json
             status --workspace PATH [--state-dir PATH] --json
             package-context --workspace PATH [--handle EXACT_HANDLE] [--state-dir PATH] --json
+            package-report --workspace PATH [--state-dir PATH] --json
+            agent-tools --workspace PATH [--inventory ABSOLUTE_JSON_FILE] [--state-dir PATH] --json
             package-assess --workspace PATH --project RELATIVE_PROJECT --framework TFM --package ID --sources NAME[,NAME...] --approve-metadata [--rid RID] [--state-dir PATH] --json
             toolchains --workspace PATH [--state-dir PATH] --json
             trial root|propose|approve|execute|status|cancel|cleanup --workspace PATH [--plan FILE] [--id ID] [--revision N] [--state-dir PATH] --json
@@ -55,8 +57,9 @@ static async Task<int> Run(string[] args)
         }
         var allowed = args[0] switch
         {
-            "scan" or "status" or "toolchains" => new[] { "--workspace", "--state-dir", "--json" },
+            "scan" or "status" or "toolchains" or "package-report" => new[] { "--workspace", "--state-dir", "--json" },
             "package-context" => ["--workspace", "--handle", "--state-dir", "--json"],
+            "agent-tools" => ["--workspace", "--inventory", "--state-dir", "--json"],
             "package-assess" => ["--workspace", "--project", "--framework", "--package",
                 "--sources", "--approve-metadata", "--rid", "--state-dir", "--json"],
             "trial" => trialOperation switch
@@ -142,6 +145,21 @@ static async Task<int> Run(string[] args)
                 break;
             case "package-context":
                 result = await service.PackageContextAsync(workspace, options.GetValueOrDefault("--handle"));
+                break;
+            case "package-report":
+                result = await service.PackageReportAsync(workspace);
+                break;
+            case "agent-tools":
+                string? inventory = null;
+                if (options.TryGetValue("--inventory", out var inventoryPath))
+                {
+                    if (!Path.IsPathFullyQualified(inventoryPath))
+                        throw new ArgumentException("Inventory path must be absolute.");
+                    inventory = DotnetNudge.Toolchains.SafeMetadataReader.ReadFile(
+                        WorkspaceDiscovery.Canonical(Path.GetDirectoryName(inventoryPath)!),
+                        Path.GetFileName(inventoryPath), 256 * 1024);
+                }
+                result = await service.AgentToolsAsync(workspace, inventory);
                 break;
             case "package-assess":
                 result = await service.AssessPackageAsync(workspace, Required("--project"),

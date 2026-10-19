@@ -16,6 +16,13 @@ The marketplace is `.claude-plugin/marketplace.json` and its plugin source is
 | Claude Code | `.claude-plugin/plugin.json` | `hooks/hooks.json` |
 
 Both hosts load the same four immediate child skill directories under `skills/`.
+The optional [.NET-branded maintenance canvas](dashboard.md) is a separate
+Copilot extension. Its distributable source lives in `canvas/`; the repository's
+`.github/extensions/nudge-dashboard/` entry point loads it for local development.
+Marketplace installation does not itself register a canvas. Use the documented
+explicit-scope `scripts/install-canvas.cjs` installer only after approval, and
+reload/restart a canvas-capable host. Claude and other hosts retain native
+questions/reports.
 Hooks are configured once per host; there is no portable hook schema. Copilot
 uses the Agent Plugins 1.0 `mcp.json`, and Claude Code uses native `.mcp.json`.
 They declare the same server name, not two simultaneous server instances.
@@ -50,6 +57,83 @@ uses `hookSpecificOutput`. Copilot drops command-hook output from
 `userPromptSubmitted`, so that event must not be relied on for context
 injection. Neither adapter invokes a model, starts restore/build, installs
 tools, or blocks turn completion.
+
+### Diagnosing a quiet session
+
+Treat discovery, command execution, scanning, context delivery and the agent's
+response as separate gates. A tool catalog entry proves only tool discovery.
+Likewise, a successful `hook.start` / `hook.end` pair can describe the SDK
+callback while no plugin command ran. An empty `{}` is also a valid Nudge
+response when there is no current, eligible finding.
+
+| Event | Nudge behavior | Expected visible result |
+| --- | --- | --- |
+| `sessionStart` | Register the exact workspace/session, queue a read-only scan, inspect cached findings. | Context only if an eligible snapshot already exists. A fresh workspace normally returns `{}`. |
+| `userPromptSubmitted` | Renew registration and queue a due scan. | No Copilot context is emitted, for compatibility with runtimes that discard this event's output. |
+| `postToolUse` | Renew registration and inspect current findings. | Deliver newly eligible findings once the background scan is complete; respect cooldowns and decisions. |
+| `sessionEnd` | Release undelivered leases and remove this session's active registration. | `{}`; no maintenance question. |
+
+The command hook does not perform the scan. The MCP server must be running in
+the **same state directory**; its worker checks the durable queue every five
+seconds and allows up to 90 seconds per scan. A short first turn can finish
+before a snapshot exists. Completing a scan does not itself wake an idle agent:
+delivery needs a later supported lifecycle event. No running worker, a failed
+scan, stale evidence, or a cooldown must not be mistaken for a clean assessment.
+Check launcher stderr and the workspace's registration, scan-job, snapshot and
+delivery records before forcing a scan.
+
+#### Standalone runtime versus CLI wrapper
+
+The October 2026 investigation reproduced a host-integration difference using
+only a local deterministic model endpoint and isolated configuration:
+
+* CLI `1.0.100-1` loaded installed command hooks, including with SDK callbacks
+  registered and repository file hooks disabled. Installing into a runtime that
+  was already started could leave its first new session without plugin command
+  hooks; a later session loaded them.
+* The app's raw `copilot-runtime` `1.0.99-2` reproduced the quiet-session symptom
+  even in a cold process: SDK callbacks fired, but installed plugin commands did
+  not. Discovery still advertised the hooks as enabled.
+* On that raw runtime, explicitly handing off the session's installed plugin
+  catalog **and then reloading its plugin hooks** restored all four commands.
+  Updating the catalog alone or reloading alone did not. The real Nudge engine
+  then registered the workspace, its MCP worker scanned it, and `postToolUse`
+  delivered the finding into the next model request.
+
+For SDK hosts with this integration gap, use the supported host APIs before the
+first prompt, preserving the complete effective plugin catalog and enabled
+states:
+
+```js
+await session.rpc.options.update({ installedPlugins: effectiveInstalledPlugins });
+await client.rpc.sessions.reloadPluginHooks({
+  sessionId: session.sessionId,
+  deferRepoHooks: !repositoryHooksTrusted
+});
+```
+
+This is host wiring, not something the plugin can repair by editing a hook
+manifest or repeatedly opening a canvas. Do not change repository trust or
+disable policy checks to compensate. Repository-origin hook admission is
+distinct from installed-plugin hook loading; `repository_hooks_trusted=false`
+alone is not evidence that an installed plugin should be suppressed. Keep
+runtime versions in reproduction notes rather than claiming all SDK hosts
+behave identically.
+
+The offline .NET integration test
+`HookQueuedScanRunsInMcpWorkerWithoutCallingAMaintenanceTool` covers the real
+engine/worker path without calling a maintenance MCP tool. An optional native
+runtime contract exercises actual command hooks, SDK callbacks and model-facing
+context together, without external AI requests or changing installed plugins:
+
+```sh
+NUDGE_COPILOT_SDK_ROOT="/absolute/copilot-sdk" \
+NUDGE_COPILOT_RUNTIME="/absolute/copilot-runtime-or-cli" \
+node --test tests/plugin-contracts/copilot-hooks.test.mjs
+```
+
+It uses an isolated Copilot home and cleans up its sessions and temporary files.
+Without those explicit paths the native-runtime test is skipped.
 
 Finding context explicitly directs the host agent to its native question tool,
 `ask_user` for Copilot or `AskUserQuestion` for Claude Code. Shared skills and
@@ -204,6 +288,7 @@ version
 scan --workspace PATH [--state-dir PATH] --json
 status --workspace PATH [--state-dir PATH] --json
 toolchains --workspace PATH [--state-dir PATH] --json
+package-report --workspace PATH [--state-dir PATH] --json
 trial root|propose|approve|execute|status|cancel|cleanup --workspace PATH [--plan ABSOLUTE_FILE] [--id ID] [--revision N] [--state-dir PATH] --json
 doctor [--workspace PATH] [--state-dir PATH] --json
 decision --workspace PATH --finding ID --revision REV --action snooze|skip-version|disable-category|enable-category [--until RFC3339] [--state-dir PATH] --json

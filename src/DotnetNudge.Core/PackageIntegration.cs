@@ -15,7 +15,7 @@ public sealed record PackageContextReport(int SchemaVersion, string WorkspaceId,
 public sealed record PackageAssessmentReport(int SchemaVersion, string WorkspaceId,
     string AssetsFingerprint, PackageAssessment Assessment);
 
-public static class PackageIntegration
+public static partial class PackageIntegration
 {
     const int MaxGraphs = 8;
     const int MaxAssessments = 4;

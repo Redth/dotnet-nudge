@@ -29,10 +29,12 @@ The following tools currently expose versioned JSON as text:
 | Tool | Behavior |
 | --- | --- |
 | `nudge_register(workspace)` | Admit the exact root, keep the session active briefly, and queue a read-only scan. |
-| `nudge_status(workspace)` | Read cached findings, suppressions and coverage without scanning. |
-| `nudge_scan(workspace)` | Run an explicit read-only scan and persist its snapshot. |
+| `nudge_status(workspace)` | Read cached findings, suppressions, SDK overview and coverage without scanning. |
+| `nudge_scan(workspace)` | Run an explicit read-only scan and persist findings plus requested/effective/installed SDK information. |
 | `nudge_context(workspace, findingId)` | Return current finding evidence without running third-party instructions. |
 | `nudge_package_context(workspace, handle?)` | List exact restored-package skill handles or read one matching skill and linked references as inert data. |
+| `nudge_package_report(workspace)` | Explicit NuGet selection report: exact scopes, current/candidate versions, advisories, publisher links and honest bounded coverage; mapped metadata only, without restores or package downloads. |
+| `nudge_agent_tools(workspace, inventoryJson?)` | Read project-matched official helper metadata and optionally compare an exact host inventory; never install, activate, update or remove resources. |
 | `nudge_package_assess(workspace, project, framework, packageId, approvedSources, acquisitionApproved, runtimeIdentifier?)` | After explicit approval of every named configured candidate/audit source, read metadata only for one exact restored package scope. |
 | `nudge_decide(workspace, findingId, revision, action, until?)` | Record a revision-bound snooze, exact-version skip, disable-category or enable-category. |
 | `nudge_preferences(workspace, findingId?, revision?, action?, category?)` | Read durable disabled categories and current suppressions; disable with current finding evidence, or re-enable a muted category by name after its finding disappears. |
@@ -40,6 +42,17 @@ The following tools currently expose versioned JSON as text:
 | `nudge_trial(workspace, operation, id?, revision?, planJson?)` | `root`, `propose`, `execute`, `status`, `cancel`, or `cleanup` an exact approved trial. `propose` takes the complete JSON plan; MCP `approve` is refused because a model tool call is not human consent. `execute` requires a previously approved revision and plan digest. |
 
 `status`, `scan`, `package-context`, and `decision` CLI commands use the same service/state layer.
+`package-report --workspace PATH --json` provides the explicit report used by
+native package selection and the optional [.NET-branded dashboard](dashboard.md).
+The canvas is a separate Copilot extension, not an MCP-rendered picker. Its
+agent handoff requests a plan; it cannot approve edits or trials.
+Scan/status JSON includes an additive `sdks` overview, independent of whether
+an update finding exists. Legacy cached scans can have a null overview and
+require a new scan; the status command does not probe or fetch metadata itself.
+Scans/status also expose `agentTools`; `agent-tools --workspace PATH
+[--inventory ABSOLUTE_JSON_FILE] --json` refreshes discovery independently.
+Catalogs cache for 24 hours and active-workspace refresh/context reconciliation
+reassesses fit. See [inventory, privacy and approval boundaries](agent-tools.md).
 `package-assess --workspace PATH --project RELATIVE_PROJECT --framework TFM
 --package ID --sources NAME[,NAME...] --approve-metadata [--rid RID] --json`
 performs the corresponding explicitly approved metadata-only assessment.

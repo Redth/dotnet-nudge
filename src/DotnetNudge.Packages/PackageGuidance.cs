@@ -51,7 +51,7 @@ public sealed class PackageGuidanceReader
             {
                 var prefix = pair.Key[..(pair.Key.LastIndexOf('/') + 1)];
                 var text = Decode(pair.Value);
-                var (name, description) = Frontmatter(text);
+                var (name, description) = ReadFrontmatter(text);
                 if (!skillNames.Add(name))
                     throw new InvalidDataException($"Colliding skill names: {name}");
                 var references = new List<GuidanceDocument>();
@@ -211,7 +211,7 @@ public sealed class PackageGuidanceReader
         return string.Join('/', stack);
     }
 
-    private static (string Name, string Description) Frontmatter(string content)
+    public static (string Name, string Description) ReadFrontmatter(string content)
     {
         var lines = content.Replace("\r\n", "\n").Split('\n');
         if (lines.Length < 4 || lines[0] != "---")

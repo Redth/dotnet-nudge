@@ -57,6 +57,104 @@ public sealed class ProtocolTests
     }
 
     [Fact]
+    public async Task HookQueuedScanRunsInMcpWorkerWithoutCallingAMaintenanceTool()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "nudge-hook-lifecycle-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        root = WorkspaceDiscovery.Canonical(root);
+        try
+        {
+            var workspace = Path.Combine(root, "workspace");
+            var stateDir = Path.Combine(root, "state");
+            var releases = Path.Combine(root, "releases");
+            var catalogs = Path.Combine(root, "agent-catalogs.json");
+            Directory.CreateDirectory(workspace);
+            Directory.CreateDirectory(Path.Combine(releases, "10.0"));
+            File.WriteAllText(Path.Combine(workspace, "global.json"), """{"sdk":{"version":"10.0.101"}}""");
+            File.WriteAllText(Path.Combine(releases, "releases-index.json"),
+                """{"releases-index":[{"channel-version":"10.0","releases.json":"https://example.invalid/10.0/releases.json"}]}""");
+            File.WriteAllText(Path.Combine(releases, "10.0", "releases.json"),
+                """{"releases":[{"sdk":{"version":"10.0.113"}}]}""");
+            File.WriteAllText(catalogs, "[]");
+            var engine = Environment.GetEnvironmentVariable("NUDGE_INTEGRATION_ENGINE_PATH");
+            var assembly = typeof(DotnetNudge.McpEndpoint).Assembly.Location;
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(35));
+            var payload = JsonSerializer.Serialize(new { cwd = workspace, sessionId = "hook-lifecycle-fixture" });
+            async Task<string> Hook(string eventName)
+            {
+                var start = new ProcessStartInfo(engine ?? "dotnet")
+                {
+                    RedirectStandardInput = true, RedirectStandardOutput = true,
+                    RedirectStandardError = true, UseShellExecute = false
+                };
+                if (engine is null) start.ArgumentList.Add(assembly);
+                foreach (var argument in new[] { "hook", "--host", "copilot", "--event", eventName,
+                    "--state-dir", stateDir }) start.ArgumentList.Add(argument);
+                using var process = Process.Start(start)!;
+                var output = process.StandardOutput.ReadToEndAsync(timeout.Token);
+                var error = process.StandardError.ReadToEndAsync(timeout.Token);
+                await process.StandardInput.WriteAsync(payload.AsMemory(), timeout.Token);
+                process.StandardInput.Close();
+                try { await process.WaitForExitAsync(timeout.Token); }
+                catch (OperationCanceledException)
+                {
+                    if (!process.HasExited) process.Kill(entireProcessTree: true);
+                    throw;
+                }
+                Assert.Equal(0, process.ExitCode);
+                Assert.Equal("", await error);
+                return (await output).Trim();
+            }
+            Assert.Equal("{}", await Hook("session-start"));
+            using var state = new NudgeState(stateDir);
+            var workspaceId = WorkspaceDiscovery.ScopeId(workspace);
+            var identity = WorkspaceDiscovery.Identities(workspace);
+            Assert.Equal(workspace, state.AdmittedRoot(workspaceId));
+            Assert.Null(state.Latest(workspaceId));
+            Assert.Contains(state.Status(identity.Repository, identity.Worktree, workspaceId).Coverage,
+                item => item.Check == "scan-job" && item.Detail.Contains("pending"));
+            Assert.Equal("{}", await Hook("post-tool-use"));
+
+            var transport = new StdioClientTransport(new StdioClientTransportOptions
+            {
+                Name = "nudge-hook-worker", Command = engine ?? "dotnet",
+                Arguments = engine is null ? [assembly, "mcp", "--state-dir", stateDir]
+                    : ["mcp", "--state-dir", stateDir],
+                EnvironmentVariables = new Dictionary<string, string?>
+                {
+                    ["NUDGE_RELEASES_DIR"] = releases, ["NUDGE_AGENT_CATALOG_FILE"] = catalogs
+                }
+            });
+            await using var client = await McpClient.CreateAsync(transport, cancellationToken: timeout.Token);
+            Assert.Contains(await client.ListToolsAsync(cancellationToken: timeout.Token),
+                tool => tool.Name == "nudge_scan");
+            while (state.Latest(workspaceId) is null)
+                await Task.Delay(100, timeout.Token);
+            var report = state.Latest(workspaceId)!;
+            Assert.Contains(report.Findings, finding => finding.Category == "sdk"
+                && finding.Current == "10.0.101" && finding.Candidate == "10.0.113");
+            Assert.Equal("{}", await Hook("prompt-submit"));
+            using var delivered = JsonDocument.Parse(await Hook("post-tool-use"));
+            var context = delivered.RootElement.GetProperty("additionalContext").GetString()!;
+            Assert.Contains("10.0.113", context);
+            Assert.Contains("`ask_user`", context);
+            Assert.Equal("{}", await Hook("post-tool-use"));
+            Assert.Equal("{}", await Hook("session-end"));
+            using var db = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = Path.Combine(stateDir, "state.sqlite"), Mode = SqliteOpenMode.ReadOnly,
+                Pooling = false
+            }.ToString());
+            db.Open();
+            using var command = db.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM workspace_sessions WHERE workspace=$workspace";
+            command.Parameters.AddWithValue("$workspace", workspaceId);
+            Assert.Equal(0L, command.ExecuteScalar());
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async Task ChildProcessInitializesListsToolsScansAndDecides()
     {
         var root = Path.Combine(Path.GetTempPath(), "nudge-integration-" + Guid.NewGuid().ToString("N"));
@@ -74,6 +172,8 @@ public sealed class ProtocolTests
                 """{"releases-index":[{"channel-version":"10.0","releases.json":"https://example.invalid/10.0/releases.json"}]}""");
             File.WriteAllText(Path.Combine(releases, "10.0", "releases.json"),
                 """{"releases":[{"sdk":{"version":"10.0.113"}}]}""");
+            var helperCatalog = Path.Combine(root, "agent-catalogs.json");
+            File.WriteAllText(helperCatalog, "[]");
             var engine = Environment.GetEnvironmentVariable("NUDGE_INTEGRATION_ENGINE_PATH");
             var assembly = typeof(DotnetNudge.McpEndpoint).Assembly.Location;
             var stderr = new List<string>();
@@ -85,7 +185,10 @@ public sealed class ProtocolTests
                     ? [assembly, "mcp", "--state-dir", stateDir]
                     : ["mcp", "--state-dir", stateDir],
                 WorkingDirectory = root,
-                EnvironmentVariables = new Dictionary<string, string?> { ["NUDGE_RELEASES_DIR"] = releases },
+                EnvironmentVariables = new Dictionary<string, string?>
+                {
+                    ["NUDGE_RELEASES_DIR"] = releases, ["NUDGE_AGENT_CATALOG_FILE"] = helperCatalog
+                },
                 StandardErrorLines = line => { lock (stderr) stderr.Add(line); }
             });
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
@@ -110,9 +213,11 @@ public sealed class ProtocolTests
             Assert.Contains(tools, t => t.Name == "nudge_toolchains");
             Assert.Contains(tools, t => t.Name == "nudge_preferences");
             Assert.Contains(tools, t => t.Name == "nudge_package_assess");
+            Assert.Contains(tools, t => t.Name == "nudge_package_report");
+            Assert.Contains(tools, t => t.Name == "nudge_agent_tools");
             foreach (var name in new[] { "nudge_status", "nudge_scan", "nudge_context", "nudge_package_context",
                 "nudge_package_assess", "nudge_toolchains", "nudge_decide", "nudge_preferences",
-                "nudge_trial", "nudge_register" })
+                "nudge_trial", "nudge_register", "nudge_package_report", "nudge_agent_tools" })
             {
                 var description = Assert.Single(tools, t => t.Name == name).Description!;
                 Assert.Contains("AskUserQuestion (Claude Code)", description);
@@ -148,9 +253,47 @@ public sealed class ProtocolTests
                 return JsonDocument.Parse(Assert.Single(result.Content.OfType<TextContentBlock>()).Text);
             }
             using (var initial = await Call("nudge_status", new() { ["workspace"] = workspace }))
+            {
                 Assert.Equal("unknown", initial.RootElement.GetProperty("coverage")[0]
                     .GetProperty("assessment").GetString());
+                Assert.Equal(JsonValueKind.Null, initial.RootElement.GetProperty("sdks").ValueKind);
+            }
+            using (var packages = await Call("nudge_package_report", new() { ["workspace"] = workspace }))
+            {
+                Assert.False(packages.RootElement.GetProperty("complete").GetBoolean());
+                Assert.Empty(packages.RootElement.GetProperty("packages").EnumerateArray());
+                Assert.Equal(WorkspaceDiscovery.Canonical(workspace),
+                    packages.RootElement.GetProperty("workspace").GetString());
+            }
             using var scan = await Call("nudge_scan", new() { ["workspace"] = workspace });
+            Assert.Equal("10.0.101", scan.RootElement.GetProperty("sdks")
+                .GetProperty("declarations")[0].GetProperty("version").GetString());
+            using (var helpers = await Call("nudge_agent_tools", new() { ["workspace"] = workspace }))
+            {
+                Assert.Equal(scan.RootElement.GetProperty("workspace").GetProperty("workspaceId").GetString(),
+                    helpers.RootElement.GetProperty("workspaceId").GetString());
+                Assert.Empty(helpers.RootElement.GetProperty("recommendations").EnumerateArray());
+                Assert.Contains(helpers.RootElement.GetProperty("coverage").EnumerateArray(), item =>
+                    item.GetProperty("check").GetString()!.StartsWith("agent-catalog:", StringComparison.Ordinal)
+                    && item.GetProperty("assessment").GetString() == "unknown");
+            }
+            var wrongInventory = await client.CallToolAsync("nudge_agent_tools", new Dictionary<string, object?>
+            {
+                ["workspace"] = workspace,
+                ["inventoryJson"] = JsonSerializer.Serialize(new
+                {
+                    schemaVersion = 1, workspaceId = "another-worktree", host = "copilot",
+                    observedAt = DateTimeOffset.UtcNow, complete = true, resources = Array.Empty<object>()
+                })
+            }, cancellationToken: timeout.Token);
+            Assert.True(wrongInventory.IsError);
+            using (var sdkStatus = await Call("nudge_status", new() { ["workspace"] = workspace }))
+            {
+                Assert.Equal("10.0.101", sdkStatus.RootElement.GetProperty("sdks")
+                    .GetProperty("declarations")[0].GetProperty("version").GetString());
+                Assert.False(string.IsNullOrWhiteSpace(sdkStatus.RootElement.GetProperty("sdks")
+                    .GetProperty("installedSdks").GetString()));
+            }
             Assert.Contains(scan.RootElement.GetProperty("coverage").EnumerateArray(),
                 c => c.GetProperty("check").GetString() == "installed-sdks"
                     && c.GetProperty("assessment").GetString() == "confirmed");
@@ -650,6 +793,27 @@ public sealed class ProtocolTests
     }
 
     [Fact]
+    public async Task EffectiveSdkAlwaysIncludesWorkspaceRootWithinTheEightScopeBudget()
+    {
+        var root = Path.Combine(AppContext.BaseDirectory, "nudge-sdk-root-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            for (var i = 0; i < 10; i++)
+            {
+                var directory = Path.Combine(root, "Project" + i);
+                Directory.CreateDirectory(directory);
+                File.WriteAllText(Path.Combine(directory, "App.csproj"), """<Project Sdk="Microsoft.NET.Sdk"/>""");
+            }
+            var observed = await DotnetProbes.ReadAsync(WorkspaceDiscovery.Discover(root));
+            Assert.Contains(observed.Coverage, c => c.Check == "effective-sdk:.");
+            Assert.Equal(8, observed.Coverage.Count(c => c.Check.StartsWith("effective-sdk:", StringComparison.Ordinal)));
+            Assert.Contains(observed.Coverage, c => c.Check == "effective-sdk" && c.Assessment == Assessment.Partial);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
     public async Task ProbeRejectsScriptMasqueradingAsDotnet()
     {
         if (OperatingSystem.IsWindows()) return;
@@ -817,6 +981,9 @@ public sealed class ProtocolTests
                     processStart.ArgumentList.Add(typeof(DotnetNudge.McpEndpoint).Assembly.Location);
                 foreach (var arg in new[] { "scan", "--workspace", root, "--state-dir", stateDir, "--json" })
                     processStart.ArgumentList.Add(arg);
+                var helperCatalog = Path.Combine(root, "agent-catalogs.json");
+                File.WriteAllText(helperCatalog, "[]");
+                processStart.Environment["NUDGE_AGENT_CATALOG_FILE"] = helperCatalog;
                 using var process = Process.Start(processStart)!;
                 var output = process.StandardOutput.ReadToEndAsync();
                 var error = process.StandardError.ReadToEndAsync();

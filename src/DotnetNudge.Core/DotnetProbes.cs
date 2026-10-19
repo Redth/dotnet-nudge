@@ -35,9 +35,9 @@ public static class DotnetProbes
             return new("", new Dictionary<string, string>(), null, null, null, coverage);
         }
         var effective = new Dictionary<string, string>(StringComparer.Ordinal);
-        var scopes = inventory.Projects.Select(project =>
-            Path.GetDirectoryName(Path.Combine(inventory.Root, project))!)
-            .Append(inventory.Root).Distinct(StringComparer.Ordinal).ToArray();
+        var scopes = new[] { inventory.Root }.Concat(inventory.Projects.Select(project =>
+            Path.GetDirectoryName(Path.Combine(inventory.Root, project))!))
+            .Distinct(StringComparer.Ordinal).ToArray();
         if (scopes.Length > 8)
             coverage.Add(new("effective-sdk", Assessment.Partial,
                 $"Only eight of {scopes.Length} project execution scopes were probed."));

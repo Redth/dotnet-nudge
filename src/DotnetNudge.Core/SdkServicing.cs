@@ -334,7 +334,7 @@ public static class SdkServicing
 public sealed class NudgeScanner(IReleaseMetadata metadata, TimeProvider? clock = null)
 {
     public async Task<ScanReport> ScanAsync(string workspace, CancellationToken cancellationToken = default,
-        bool probeInstalled = false, NudgeState? state = null)
+        bool probeInstalled = false, NudgeState? state = null, bool checkAgentTools = false)
     {
         var inventory = WorkspaceDiscovery.Discover(workspace);
         var (findings, sdkCoverage) = await SdkServicing.CheckAsync(inventory, metadata, clock, cancellationToken);
@@ -343,12 +343,21 @@ public sealed class NudgeScanner(IReleaseMetadata metadata, TimeProvider? clock 
             state, cancellationToken);
         var toolchains = state is null ? null : await ToolchainIntegration.ScanAsync(inventory,
             observed, metadata, cancellationToken);
+        var helpers = !checkAgentTools || state is null ? null :
+            await AgentTools.AssessAsync(inventory, state, token: cancellationToken);
         return new(Contract.Version, inventory, findings.Concat(packages?.Findings ?? [])
-                .Concat(toolchains?.Findings ?? []).ToArray(),
+                .Concat(toolchains?.Findings ?? []).Concat(helpers?.Findings ?? []).ToArray(),
             inventory.Coverage.Where(c => observed is null || c.Check != "effective-sdk")
                 .Where(c => packages is null || c.Check != "nuget-resolved-graph")
                 .Concat(sdkCoverage).Concat(observed?.Coverage ?? [])
-                .Concat(packages?.Coverage ?? []).Concat(toolchains?.Coverage ?? []).ToArray(),
-            (clock ?? TimeProvider.System).GetUtcNow());
+                .Concat(packages?.Coverage ?? []).Concat(toolchains?.Coverage ?? [])
+                .Concat(helpers?.Report.Coverage ?? []).ToArray(),
+            (clock ?? TimeProvider.System).GetUtcNow())
+        {
+            Sdks = new(inventory.SdkDeclarations,
+                observed?.EffectiveSdks ?? new Dictionary<string, string>(StringComparer.Ordinal),
+                observed?.InstalledSdks),
+            AgentTools = helpers?.Report
+        };
     }
 }

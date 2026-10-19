@@ -77,6 +77,13 @@ available tools:
 
 ## Apply questions to every maintenance category
 
+For NuGet planning, use the focused all-packages / vulnerable-only / choose-from-
+a-report flow in [Package selection and dashboard](package-dashboard.md).
+When supported, offer the interactive dashboard in a separate presentation
+question, not as a fifth choice. The generic per-finding examples below remain
+appropriate for individual advisory/deprecation investigations. Dashboard
+availability never replaces native approval or broadens the described scope.
+
 Do not reserve the picker for SDK updates. After an actionable assessment or
 newly delivered hook findings, offer a focused native question for each
 actionable category. Reading a tool

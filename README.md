@@ -5,6 +5,9 @@ Copilot CLI and Claude Code hook adapters.
 
 ## Current status
 
+Plugin **0.3.0** requires engine **1.1.0** or newer for explicit package reports,
+SDK inventory, agent-helper recommendations and the optional dotNudge canvas.
+
 The plugin uses one launcher for MCP, hooks and CLI commands. On first MCP or
 CLI use, it automatically downloads the matching self-contained engine from
 this repository's latest stable release, verifies both the compressed archive
@@ -39,6 +42,13 @@ flag missing workloads, manifest mismatches and newer same-band pinned sets.
 These are read-only recommendations, not automatic upgrades or proof of
 toolchain compatibility.
 
+Agent-helper checks match installable skill/LSP/MCP bundles from `dotnet/skills`
+and `dotnet/maui-labs` to concrete project signals. They periodically refresh
+source metadata and reassess fit, explain why each helper applies, and compare
+explicit host inventory for update or project-fit review suggestions. They
+never automatically install, enable or remove anything; unknown inventory is
+not “missing.” See [agent-helper recommendations](docs/agent-tools.md).
+
 `status` reads the last cached scan; run `scan` to check for updates now.
 Package checks require restored graphs and permitted source metadata. Workload
 checks still require `.dotnet-nudge/toolchains.json` evidence; automatic workload
@@ -56,8 +66,10 @@ dotnet run --project src/DotnetNudge/DotnetNudge.csproj -- status --workspace "$
 
 - **Copilot CLI:** installs from the shared `.claude-plugin/marketplace.json`.
   Session-start and post-tool hooks can supply `additionalContext`.
-  `userPromptSubmitted` output is not delivered as context; it is bookkeeping
-  only. The wrappers do not submit prompts or block turn completion.
+  Nudge treats `userPromptSubmitted` as bookkeeping only for compatibility with
+  runtimes that discard command-hook output. The wrappers do not submit prompts
+  or block turn completion. SDK hosts must also initialize installed-plugin
+  command hooks; see [hook diagnostics](docs/plugin-development.md#diagnosing-a-quiet-session).
 - **Claude Code:** uses its own hook output serializer and never blocks `Stop`.
   The checked-in command launcher uses Bash; on Windows, Claude Code hook use
   requires a compatible Bash shell. The PowerShell launcher is selected by
@@ -70,6 +82,15 @@ dotnet run --project src/DotnetNudge/DotnetNudge.csproj -- status --workspace "$
   Questions use plain language such as "What's new?" and "Help me update";
   internal finding IDs, revision tokens and diagnostic records stay in tool
   data, not in the user's choices.
+- **Interactive dashboard:** a .NET-branded Copilot canvas supports NuGet
+  reports, current/target versions and sources, package/advisory details,
+  grouping, filtering, saved selection/deferral, and exact-selection requests
+  back to the agent. SDKs, workloads, runtimes and host tools share its overview.
+  Native questions remain the default; the dashboard is offered only when its
+  provider and bidirectional actions are available. Selections request a plan,
+  not permission to edit. See [dashboard setup and limits](docs/dashboard.md).
+  Claude Code and other hosts retain the question/report flow; their canvas
+  adapters are not implemented.
 - Hooks preserve the engine's stdout, stderr, stdin, and exit status. A missing
   engine produces one short setup message at most once in the writable state
   directory, without writing to the installed plugin cache. An unusable state

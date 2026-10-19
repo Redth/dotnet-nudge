@@ -22,6 +22,11 @@ public static class WorkspaceDiscovery
         "NuGet.Config", "nuget.config", "dotnet-tools.json", "packages.lock.json"
     };
 
+    public static bool IsContextFile(string path) =>
+        path.EndsWith(".razor", StringComparison.OrdinalIgnoreCase) ||
+        Path.GetFileName(path).Equals("template.json", StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(Path.GetFileName(Path.GetDirectoryName(path)), ".template.config", StringComparison.OrdinalIgnoreCase);
+
     public static string Canonical(string path)
     {
         var full = Path.GetFullPath(path);
@@ -105,6 +110,8 @@ public static class WorkspaceDiscovery
         var configurations = new List<string>();
         var declarations = new List<SdkDeclaration>();
         var coverage = new List<Coverage>();
+        var contextFiles = new List<string>();
+        var contextCapped = false;
         var visited = 0;
         void Walk(string directory, int depth)
         {
@@ -117,6 +124,11 @@ public static class WorkspaceDiscovery
                     continue;
                 var name = Path.GetFileName(file);
                 var relative = Path.GetRelativePath(root, file).Replace('\\', '/');
+                if (IsContextFile(file))
+                {
+                    if (contextFiles.Count < 32) contextFiles.Add(relative);
+                    else contextCapped = true;
+                }
                 if (ProjectExtensions.Contains(Path.GetExtension(file)))
                 {
                     try
@@ -171,6 +183,8 @@ public static class WorkspaceDiscovery
                     Walk(child, depth + 1);
         }
         Walk(root, 0);
+        if (contextCapped)
+            coverage.Add(new("agent-context-files", Assessment.Partial, "Only 32 helper-context file indicators were retained."));
         // Ancestor scopes can affect SDK selection but cannot be inferred from a nested declaration.
         var ancestor = Directory.GetParent(root);
         while (ancestor is not null)
@@ -214,7 +228,7 @@ public static class WorkspaceDiscovery
         coverage.Add(new("effective-sdk", Assessment.Unknown,
             "Declared global.json settings are not an observed SDK selection."));
         return new(Contract.Version, repository, worktree, ScopeId(root), root, projects, projectDeclarations, solutions,
-            configurations, relevantDeclarations, coverage);
+            configurations, relevantDeclarations, coverage) { ContextFiles = contextFiles };
     }
 
     static SdkDeclaration ReadSdk(string file, string scope)

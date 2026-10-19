@@ -34,12 +34,25 @@ public sealed record WorkspaceInventory(
     IReadOnlyList<string> Projects, IReadOnlyList<ProjectDeclaration> ProjectDeclarations,
     IReadOnlyList<string> Solutions,
     IReadOnlyList<string> ConfigurationFiles, IReadOnlyList<SdkDeclaration> SdkDeclarations,
-    IReadOnlyList<Coverage> Coverage);
+    IReadOnlyList<Coverage> Coverage)
+{
+    public IReadOnlyList<string> ContextFiles { get; init; } = [];
+}
 public sealed record ScanReport(int SchemaVersion, WorkspaceInventory Workspace,
-    IReadOnlyList<Finding> Findings, IReadOnlyList<Coverage> Coverage, DateTimeOffset ScannedAt);
+    IReadOnlyList<Finding> Findings, IReadOnlyList<Coverage> Coverage, DateTimeOffset ScannedAt)
+{
+    public SdkOverview? Sdks { get; init; }
+    public AgentToolsReport? AgentTools { get; init; }
+}
+public sealed record SdkOverview(IReadOnlyList<SdkDeclaration> Declarations,
+    IReadOnlyDictionary<string, string> EffectiveSdks, string? InstalledSdks);
 public sealed record FindingStatus(Finding Finding, bool Eligible, string? Suppression);
 public sealed record StatusReport(int SchemaVersion, string RepositoryId, string WorktreeId, string WorkspaceId,
-    DateTimeOffset? ScannedAt, IReadOnlyList<FindingStatus> Findings, IReadOnlyList<Coverage> Coverage);
+    DateTimeOffset? ScannedAt, IReadOnlyList<FindingStatus> Findings, IReadOnlyList<Coverage> Coverage)
+{
+    public SdkOverview? Sdks { get; init; }
+    public AgentToolsReport? AgentTools { get; init; }
+}
 public sealed record DecisionResult(int SchemaVersion, string FindingId, string Revision,
     DecisionAction Action, DateTimeOffset RecordedAt, DateTimeOffset? Until);
 public sealed record CategoryPreference(string Category, DateTimeOffset RecordedAt);
