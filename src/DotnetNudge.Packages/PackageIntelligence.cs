@@ -16,7 +16,11 @@ public sealed record PackageAdvisory(string Url, int Severity, string Range, str
 public sealed record PackageDeprecation(string Source, IReadOnlyList<string> Reasons,
     string? Message, string? AlternatePackageId, string? AlternateVersionRange);
 public sealed record UpdateCandidate(NuGetVersion Version, string Kind, string Source,
-    EvidenceStatus Compatibility, string? Diagnostic);
+    EvidenceStatus Compatibility, string? Diagnostic)
+{
+    public string? ProjectUrl { get; init; }
+    public string? Description { get; init; }
+}
 public sealed record RemediationPath(IReadOnlyList<string> PackageIds, string DirectParent,
     NuGetVersion? ParentCandidate, string? ParentSource,
     EvidenceStatus Coverage = EvidenceStatus.Unknown, string? Diagnostic = null);
@@ -45,7 +49,8 @@ public sealed record PackageAssessment(PackageNode Package, EvidenceStatus Statu
                 .ThenBy(a => a.Url, StringComparer.Ordinal).ThenBy(a => a.Range, StringComparer.Ordinal)
                 .ThenBy(a => a.Severity).ToArray(),
             Candidates = Candidates.Select(c => new
-                { Version = c.Version.ToNormalizedString(), c.Kind, c.Source, c.Compatibility, c.Diagnostic })
+                { Version = c.Version.ToNormalizedString(), c.Kind, c.Source, c.Compatibility,
+                    c.Diagnostic, c.ProjectUrl, c.Description })
                 .OrderBy(c => c.Source, StringComparer.Ordinal)
                 .ThenBy(c => c.Version, StringComparer.Ordinal)
                 .ThenBy(c => c.Kind, StringComparer.Ordinal)
@@ -209,7 +214,11 @@ public sealed class PackageIntelligence
                         }
                     }
                     candidates.Add(new(version, Classify(package.Version, version), source.Name,
-                        compatibility, reason));
+                        compatibility, reason)
+                    {
+                        ProjectUrl = candidate.ProjectUrl?.ToString(),
+                        Description = candidate.Description
+                    });
                 }
             }
             catch (Exception ex) when (FeedFailure(ex))

@@ -1,0 +1,84 @@
+<!doctype html>
+<!--
+THESIS: Package, version change and critical status first; evidence appears only when deliberately opened.
+OWN-WORLD: .NET accents with Copilot-native neutral pills, compact toolbars, host typography and focus tokens.
+STORY: Inspect evidence, choose targets, defer packages, then ask the agent for a bounded plan.
+FIRST VIEWPORT: One category toolbar with Refresh leads straight into search and update rows; one planning action below.
+FORM: Task-oriented workbench, explicitly pinned to the .NET brand and native host conventions.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dotNudge</title>
+  <link rel="icon" href="dotnet-logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="dashboard.css">
+  <script type="module" src="dashboard.mjs"></script>
+</head>
+<body>
+  <a class="skip" href="#packages">Skip to packages</a>
+  <div class="canvas-controls">
+   <header class="canvas-toolbar">
+    <nav aria-label="Maintenance areas" id="areas">
+      <button type="button" data-area="package" aria-current="page">NuGet</button>
+      <button type="button" data-area="sdk">SDKs</button>
+      <button type="button" data-area="workload">Workloads</button>
+      <button type="button" data-area="runtime">Runtimes</button>
+      <button type="button" data-area="toolchain">Host tools</button>
+      <button type="button" data-area="agent-tools">Skills &amp; tools</button>
+    </nav>
+    <button id="refresh" class="icon-button" type="button" aria-label="Refresh" title="Refresh maintenance findings">
+      <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 7a5 5 0 1 0-1 4M13 2v5H8"/></svg>
+    </button>
+   </header>
+    <section id="package-controls" aria-label="Package controls">
+      <div class="toolbar">
+        <label class="search-field"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.75" cy="6.75" r="4.25"/><path d="m10 10 3.5 3.5"/></svg>
+          <input id="search" type="search" aria-label="Find a package or project" placeholder="Find a package or project">
+        </label>
+        <button id="view-toggle" type="button" aria-expanded="false" aria-controls="view-options">
+          <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 12h12"/><circle cx="6" cy="4" r="2"/><circle cx="10" cy="12" r="2"/></svg>View options
+          <span id="coverage-indicator" class="coverage-indicator" role="img" aria-label="Some checks are incomplete" title="Some checks are incomplete" hidden>!</span></button>
+        <button id="selection-toggle" type="button" aria-expanded="false" aria-controls="selection-options">
+          <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m2 4 1.5 1.5L6 3M8 4h6M2 11l1.5 1.5L6 10M8 11h6"/></svg>Select
+        </button>
+      </div>
+      <div id="view-options" class="option-panel" hidden>
+        <label>Group by<select id="group"><option value="workspace">Solution-wide (workspace)</option><option value="project">Project</option><option value="package">Package</option></select></label>
+        <label>Show<select id="filter"><option value="attention">Updates and issues</option><option value="all">All restored packages</option><option value="security">Vulnerable packages</option><option value="direct">Direct dependencies</option><option value="transitive">Transitive dependencies</option><option value="selected">Selected packages</option></select></label>
+        <label>Sort by<select id="sort"><option value="security">Security first</option><option value="name">Package name</option><option value="project">Project path</option><option value="kind">Update kind</option></select></label>
+        <div class="report-info">
+          <p id="notice" role="status" aria-live="polite"></p>
+          <details id="coverage"><summary>Report coverage</summary><div id="coverage-content"></div></details>
+        </div>
+      </div>
+      <div id="selection-options" class="option-panel selection-tools" hidden>
+        <button id="select-visible" type="button">Select visible updates</button>
+        <button id="select-security" type="button">Select vulnerable only</button>
+        <button id="clear" type="button">Clear selection</button>
+      </div>
+      <div id="package-actions" class="action-row">
+        <button id="plan" class="primary" type="button" disabled>Plan selected updates</button>
+        <div class="selection-summary" aria-live="polite"><strong id="selection-count">Nothing selected</strong>
+          <span id="selection-note" hidden></span><small>No changes until approved.</small></div>
+      </div>
+    </section>
+    <div id="category-actions" class="action-row" hidden>
+      <button id="review-category" type="button">Review with agent</button>
+    </div>
+  </div>
+  <main id="content-scroll">
+    <div id="error" role="alert" hidden></div>
+    <section id="package-area" aria-label="NuGet package updates">
+      <div class="workbench">
+        <div id="packages" tabindex="-1" aria-label="Package update report" aria-busy="true"><p class="muted">Loading packages...</p></div>
+      </div>
+    </section>
+    <section id="category-area" hidden aria-labelledby="category-title"><h2 id="category-title" class="sr-only"></h2>
+      <div id="category-findings"></div></section>
+    <details class="activity" id="activity-disclosure" hidden><summary id="activity-title">Agent activity</summary>
+      <div id="activity"></div></details>
+  </main>
+  <div id="version-options" class="version-options" popover="manual" role="listbox" aria-label="Target version"></div>
+</body>
+</html>

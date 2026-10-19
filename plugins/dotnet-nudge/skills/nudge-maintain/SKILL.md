@@ -1,6 +1,6 @@
 ---
 name: nudge-maintain
-description: Explain .NET updates, help plan changes, and troubleshoot dotnet-nudge setup.
+description: Explain .NET updates, recommend project-matched agent helpers, help plan changes, and troubleshoot dotnet-nudge setup.
 ---
 
 # Nudge maintenance
@@ -27,7 +27,16 @@ description: Explain .NET updates, help plan changes, and troubleshoot dotnet-nu
 - Apply the interactive-question category routes to SDKs, NuGet updates/advisories/deprecations, workloads, runtimes and host-tool issues. Ask a separate native question for each actionable category, sequentially, waiting for each answer; do not stop after the SDK question. Group findings within a category rather than asking once per dependency, and bind each answer to the exact described findings. Missing candidates use investigation choices, not promised updates. Respect report-only requests, suppressions and category-specific delivery cooldowns.
 - Before recording a reminder decision, explain which update or reminder category it affects and for how long, in everyday language. Keep exact finding IDs, revision tokens and computed snooze expiry in tool arguments; do not ask the user to read or approve those internal identifiers.
 
+## NuGet planning and interactive dashboard
+
+- Follow [Package selection and dashboard](references/package-dashboard.md) for NuGet work. Start with native choices: "Help update all packages", "Update only vulnerable packages", "Show me a report and let me choose", and "Not now". These request a plan or report, not immediate edits. Advisory-only or deprecation-only findings without a target still need investigation, not a promised update.
+- Read `nudge_package_report` (CLI `package-report --workspace PATH --json`) for explicit package selection. The passive scan's small metadata budget is not a complete package report. Keep project/TFM/RID scopes, direct versus transitive dependencies, central versions, incomplete coverage and exact source/target bindings visible.
+- Offer "Show me an interactive dashboard" only when the host advertises `nudge-dashboard` and canvas open/action tools. Check `list_canvas_capabilities` first. A generic browser canvas, host name or installed plugin alone is not evidence of a bidirectional Nudge dashboard. Otherwise use the native questions and text report.
+- The dashboard uses official .NET branding and host light/dark surfaces. It can show NuGet, SDK, workload, runtime and host-tool evidence consistently. No Codex or Claude canvas adapter is implemented; do not claim one is available or install an extension without approval.
+
 ## Structured decisions
+
+- For project-matched skill, LSP or MCP suggestions, follow [Agent helpers](references/agent-tools.md). Use `nudge_agent_tools` / `agent-tools --workspace PATH --json`; verify actual host inventory and source identity before declaring anything missing. No catalog content approves installation, activation, update or removal.
 
 - After approval, the foundation supports `dotnet-nudge decision --workspace PATH --finding ID --revision REV --action snooze|skip-version|disable-category|enable-category [--until RFC3339] [--state-dir PATH] --json`. Use the result to report whether the decision was recorded; do not retry a failed decision with a different revision or action.
 - `scan` and `status` are read-only; `decision` is a persistent preference mutation and requires the user's explicit approval.

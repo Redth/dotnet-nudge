@@ -295,7 +295,7 @@ public sealed class NudgeState : IDisposable
                 ? report.Coverage.Append(new Coverage("snapshot", Assessment.Stale,
                     "A newer workspace scan is pending or failed; cached findings are not delivered."))
                     .Append(pending).ToArray()
-                : report.Coverage.Append(pending).ToArray());
+                : report.Coverage.Append(pending).ToArray()) { Sdks = report.Sdks, AgentTools = report.AgentTools };
     }
 
     string? DeliverySuppression(string repository, Finding finding)
@@ -701,8 +701,13 @@ public sealed class NudgeState : IDisposable
             {
                 if (++count > 10000) throw new InvalidDataException("Workspace fingerprint exceeds 10,000 files.");
                 var name = Path.GetFileName(path);
-                if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0 ||
-                    !(name is "global.json" or "project.assets.json" or "packages.lock.json"
+                if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) continue;
+                if (WorkspaceDiscovery.IsContextFile(path))
+                {
+                    hash.AppendData(Encoding.UTF8.GetBytes("context:" + Path.GetRelativePath(root, path) + "\n"));
+                    continue;
+                }
+                if (!(name is "global.json" or "project.assets.json" or "packages.lock.json"
                     or "Directory.Packages.props" or "NuGet.Config" or "nuget.config"
                     or "dotnet-tools.json" or "Directory.Build.props" or "Directory.Build.targets"
                     or "toolchains.json"

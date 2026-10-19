@@ -38,7 +38,7 @@ public sealed class NudgeService(NudgeState state, string? owner = null, bool cl
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(90));
             var result = await new NudgeScanner(source).ScanAsync(root, deadline.Token,
-                probeInstalled: true, state: state);
+                probeInstalled: true, state: state, checkAgentTools: true);
             state.FinishScan(job, sessionOwner, result, null, inputFingerprint);
             return result;
         }
@@ -76,6 +76,14 @@ public sealed class NudgeService(NudgeState state, string? owner = null, bool cl
     public Task<PackageContextReport> PackageContextAsync(string root, string? handle = null,
         CancellationToken token = default) =>
         PackageIntegration.ContextAsync(WorkspaceDiscovery.Discover(AdmittedPath(root)), handle, token);
+
+    public Task<PackageReport> PackageReportAsync(string root, CancellationToken token = default) =>
+        PackageIntegration.ReportAsync(WorkspaceDiscovery.Discover(AdmittedPath(root)), token);
+
+    public async Task<AgentToolsReport> AgentToolsAsync(string root, string? inventoryJson = null,
+        CancellationToken token = default) =>
+        (await AgentTools.AssessAsync(WorkspaceDiscovery.Discover(AdmittedPath(root)),
+            state, inventoryJson, token)).Report;
 
     public Task<PackageAssessmentReport> AssessPackageAsync(string root, string project,
         string framework, string? runtimeIdentifier, string packageId,

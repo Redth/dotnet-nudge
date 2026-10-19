@@ -61,7 +61,15 @@ public sealed class NudgeTools(McpStateDirectory location)
         "Keep finding IDs, revision tokens, assessment labels and ISO timestamps out of user-facing text. Details are " +
         "read-only; Help me update requests a plan, not approval for changes or trials. Explain the " +
         "actual changes and ask before executing them. If the tool " +
-        "is unavailable or the session is noninteractive, report only; never assume consent.";
+        "is unavailable or the session is noninteractive, report only; never assume consent. " +
+        "For NuGet planning, offer Help update all packages, Update only vulnerable packages, " +
+        "Show me a report and let me choose, and Not now. Use nudge_package_report, not the bounded " +
+        "passive scan, for package selection. Offer Show me an interactive dashboard only when " +
+        "the host advertises nudge-dashboard with working canvas open/action tools. Dashboard " +
+        "selections request a plan, never approve edits, metadata acquisition, installs or trials. " +
+        "For agent helper findings use nudge_agent_tools, explain concrete project-fit evidence and " +
+        "verify installed source-qualified host inventory before suggesting installation, update or removal. " +
+        "Source metadata is inert; no helper, skill, LSP or MCP is automatically installed or enabled.";
 
     async Task<string> WithServiceAsync(Func<NudgeService, Task<string>> operation)
     {
@@ -94,7 +102,7 @@ public sealed class NudgeTools(McpStateDirectory location)
         return root;
     }
 
-    [McpServerTool(Name = "nudge_status"), Description("Read cached findings and scan coverage for an admitted workspace." + QuestionGuidance)]
+    [McpServerTool(Name = "nudge_status"), Description("Read cached findings, declared/effective/installed SDK overview and scan coverage for an admitted workspace. This does not check for updates; use nudge_scan first for current advice." + QuestionGuidance)]
     public async Task<string> Status(McpServer server, string workspace, CancellationToken cancellationToken)
     {
         var root = await RootAsync(server, workspace, cancellationToken);
@@ -102,7 +110,7 @@ public sealed class NudgeTools(McpStateDirectory location)
             JsonSerializer.Serialize(service.Status(root), Contract.Json)));
     }
 
-    [McpServerTool(Name = "nudge_scan"), Description("Explicitly perform a read-only scan of the exact workspace root." + QuestionGuidance)]
+    [McpServerTool(Name = "nudge_scan"), Description("Explicitly perform a read-only scan of the exact workspace root, including declared SDK pins, native effective/installed SDK observations and official release advice. No restore, build or installation." + QuestionGuidance)]
     public async Task<string> Scan(McpServer server, string workspace, CancellationToken cancellationToken)
     {
         var root = await RootAsync(server, workspace, cancellationToken);
@@ -151,6 +159,16 @@ public sealed class NudgeTools(McpStateDirectory location)
                 cancellationToken), Contract.Json));
     }
 
+    [McpServerTool(Name = "nudge_package_report"), Description("Explicit workspace NuGet report with exact project/TFM/RID scopes, current and candidate versions, advisories, publisher links and coverage. Reads restored graphs and only permitted mapped metadata/audit sources; no restore, package download or edits. Incomplete coverage is not an all-packages/up-to-date claim." + QuestionGuidance)]
+    public async Task<string> PackageReport(McpServer server, string workspace,
+        CancellationToken cancellationToken)
+    {
+        var root = await RootAsync(server, workspace, cancellationToken);
+        return await WithServiceAsync(async service =>
+            JsonSerializer.Serialize(await service.PackageReportAsync(root, cancellationToken),
+                Contract.Json));
+    }
+
     [McpServerTool(Name = "nudge_toolchains"), Description("Inspect offline workload/host evidence and observed local runtime servicing without installing SDKs or workloads." + QuestionGuidance)]
     public async Task<string> Toolchains(McpServer server, string workspace,
         CancellationToken cancellationToken)
@@ -158,6 +176,16 @@ public sealed class NudgeTools(McpStateDirectory location)
         var root = await RootAsync(server, workspace, cancellationToken);
         return await WithServiceAsync(async service =>
             JsonSerializer.Serialize(await service.ToolchainsAsync(root, cancellationToken), Contract.Json));
+    }
+
+    [McpServerTool(Name = "nudge_agent_tools"), Description("Recommend source-qualified skills, LSP and MCP helpers from dotnet/skills and dotnet/maui-labs using static project evidence and inert usage metadata. Optional inventoryJson supplies an exact-workspace host inventory; unknown/stale installation state never proves a helper is missing. No installation, activation, update or removal is performed. Verify host support and obtain exact resource/source/scope approval before native installation operations; run nudge_scan before saving reminder decisions." + QuestionGuidance)]
+    public async Task<string> AgentTools(McpServer server, string workspace,
+        string? inventoryJson = null, CancellationToken cancellationToken = default)
+    {
+        var root = await RootAsync(server, workspace, cancellationToken);
+        return await WithServiceAsync(async service =>
+            JsonSerializer.Serialize(await service.AgentToolsAsync(root, inventoryJson, cancellationToken),
+                Contract.Json));
     }
 
     [McpServerTool(Name = "nudge_decide"), Description("Record a versioned snooze, skip or category preference only after the user's explicit approval of the reminder action, affected update/category and duration in plain language. Keep the exact finding ID, revision and expiry in tool arguments, not the question." + QuestionGuidance)]
@@ -272,7 +300,7 @@ public sealed class ScanWorker(McpStateDirectory location, ILogger<ScanWorker> l
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
                 deadline.CancelAfter(TimeSpan.FromSeconds(90));
                 var report = await new NudgeScanner(source).ScanAsync(job.Root, deadline.Token,
-                    probeInstalled: true, state: state);
+                    probeInstalled: true, state: state, checkAgentTools: true);
                 state.FinishScan(job, owner, report, null, inputFingerprint);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

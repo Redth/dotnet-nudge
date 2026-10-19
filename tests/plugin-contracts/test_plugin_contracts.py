@@ -106,7 +106,7 @@ class PluginManifestTests(unittest.TestCase):
             {
                 "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
                 "name": "dotnet-nudge",
-                "version": "0.2.6",
+                "version": "0.3.0",
                 "description": "A .NET maintenance plugin with shared skills and host-specific hooks; engine actions remain explicit.",
                 "author": {"name": "Redth"},
                 "repository": "https://github.com/Redth/dotnet-nudge",
@@ -160,7 +160,7 @@ class PluginManifestTests(unittest.TestCase):
 
         runtime = read_json(plugin_dir / "runtime-manifest.json")
         self.assertEqual(runtime["status"], "release-channel")
-        self.assertEqual(runtime["minimumVersion"], "1.0.5")
+        self.assertEqual(runtime["minimumVersion"], "1.1.0")
         self.assertEqual(runtime["artifacts"], [])
         self.assertEqual(runtime["releaseManifestUrl"],
                          "https://github.com/Redth/dotnet-nudge/releases/latest/download/runtime-manifest.json")

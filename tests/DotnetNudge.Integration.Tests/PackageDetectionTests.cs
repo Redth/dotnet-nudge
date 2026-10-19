@@ -9,6 +9,82 @@ namespace DotnetNudge.Integration.Tests;
 
 public sealed class PackageDetectionTests
 {
+    [Fact]
+    public async Task ExplicitReportChecksBeyondPassiveBudgetAndKeepsUnknownTransitiveScopes()
+    {
+        using var feed = new Feed();
+        var root = Path.Combine(AppContext.BaseDirectory, "nudge-report-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "NuGet.Config"), $"""
+                <configuration><packageSources><clear/><add key="private" value="{feed.Source}"/></packageSources>
+                <packageSourceMapping><packageSource key="private"><package pattern="Acme.Parent"/></packageSource></packageSourceMapping></configuration>
+                """);
+            for (var i = 0; i < 3; i++)
+            {
+                var directory = Path.Combine(root, "App" + i);
+                Directory.CreateDirectory(Path.Combine(directory, "obj"));
+                var project = Path.Combine(directory, "App.csproj");
+                File.WriteAllText(project, """<Project Sdk="Microsoft.NET.Sdk"/>""");
+                var assets = Path.Combine(directory, "obj", "project.assets.json");
+                var graph = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "graph.json"))
+                    .Replace("{CACHE}", Path.Combine(root, "cache").Replace('\\', '/'), StringComparison.Ordinal)
+                    .Replace("{PROJECT}", project.Replace('\\', '/'), StringComparison.Ordinal)
+                    .Replace("{OUTPUT}", Path.GetDirectoryName(assets)!.Replace('\\', '/'), StringComparison.Ordinal);
+                File.WriteAllText(assets, graph);
+            }
+            var report = await PackageIntegration.ReportAsync(WorkspaceDiscovery.Discover(root));
+            Assert.Equal(12, report.Packages.Count);
+            Assert.Equal(12, report.Packages.Select(p => p.Id).Distinct().Count());
+            var direct = report.Packages.Where(p => p.Direct).ToArray();
+            Assert.Equal(6, direct.Length);
+            Assert.All(direct, p =>
+            {
+                Assert.True(p.CentrallyManaged);
+                Assert.Contains(p.Candidates, c => c.Version == "1.1.0" && c.Source == "private");
+                Assert.Contains(p.Deprecations, d => d.Message == "Use the maintained fork.");
+                Assert.DoesNotContain(root, p.Project);
+            });
+            Assert.All(report.Packages.Where(p => !p.Direct), p =>
+            {
+                Assert.Empty(p.Candidates);
+                Assert.NotEmpty(p.Diagnostics);
+            });
+            Assert.False(report.Complete);
+            Assert.Contains(report.Coverage, c => c.Assessment == Assessment.Partial);
+            var again = await PackageIntegration.ReportAsync(WorkspaceDiscovery.Discover(root));
+            Assert.Equal(report.Packages.Select(p => p.Revision), again.Packages.Select(p => p.Revision));
+            Assert.DoesNotContain(feed.Requests, p => p.EndsWith(".nupkg", StringComparison.Ordinal));
+            Assert.DoesNotContain(feed.Requests, p => p.Contains("replacement", StringComparison.OrdinalIgnoreCase));
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                PackageIntegration.ReportAsync(WorkspaceDiscovery.Discover(root), cancelled.Token));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task ExplicitReportDoesNotCallMissingRestoresOrEmptyWorkspacesUpToDate()
+    {
+        var root = Path.Combine(AppContext.BaseDirectory, "nudge-empty-report-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var empty = await PackageIntegration.ReportAsync(WorkspaceDiscovery.Discover(root));
+            Assert.False(empty.Complete);
+            Assert.Empty(empty.Packages);
+            File.WriteAllText(Path.Combine(root, "App.csproj"), """<Project Sdk="Microsoft.NET.Sdk"/>""");
+            var missing = await PackageIntegration.ReportAsync(WorkspaceDiscovery.Discover(root));
+            Assert.False(missing.Complete);
+            Assert.Contains(missing.Coverage, c => c.Check.StartsWith("package-graph:", StringComparison.Ordinal)
+                && c.Assessment == Assessment.Unknown);
+            Assert.False(Directory.Exists(Path.Combine(root, "obj")));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     sealed class Feed : IDisposable
     {
         readonly HttpListener listener = new();
