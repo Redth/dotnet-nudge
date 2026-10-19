@@ -35,7 +35,7 @@ function stage(args) {
     } } };
     fs.writeFileSync(path.join(destination, ".mcp.json"), JSON.stringify(config, null, 2) + "\n");
     const launcher = path.join(destination, "scripts", "run.cjs");
-    const content = fs.readFileSync(launcher, "utf8");
+    const content = fs.readFileSync(launcher, "utf8").replaceAll("\r\n", "\n");
     const prologue = '#!/usr/bin/env node\n"use strict";\n';
     if (!content.startsWith(prologue)) throw new Error("The dev launcher header changed; environment binding needs review.");
     const bindings = Object.entries(config.mcpServers["dotnet-nudge-dev"].env)

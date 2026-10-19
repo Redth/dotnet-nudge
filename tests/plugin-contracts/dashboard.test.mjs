@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
@@ -412,4 +412,18 @@ test("dev plugin staging is local, isolated, explicit and native-extension capab
     assert.match(entry, /dotNudge/);
     assert.match(entry, /"\.\.\/\.\.\/canvas\/provider\.mjs"/);
     assert.throws(() => stage(["--output", destination, "--engine", process.execPath]), /nothing was overwritten/);
+});
+
+test("dev plugin staging accepts CRLF source launchers", async t => {
+    const f = await fixture(t);
+    const source = join(f.root, "source-plugin");
+    await cp(new URL("../../plugins/dotnet-nudge/", import.meta.url), source, { recursive: true });
+    const launcher = join(source, "scripts", "run.cjs");
+    await writeFile(launcher, (await readFile(launcher, "utf8")).replace(/\r?\n/g, "\r\n"));
+    const { stage: stageCopiedPlugin } = require(join(source, "scripts", "stage-dev-plugin.cjs"));
+    const destination = join(f.root, "staged-crlf-plugin");
+    stageCopiedPlugin(["--output", destination, "--engine", process.execPath]);
+    const stagedLauncher = join(destination, "scripts", "run.cjs");
+    assert.match(await readFile(stagedLauncher, "utf8"), /process\.env\.NUDGE_ENGINE_PATH = /);
+    execFileSync(process.execPath, ["--check", stagedLauncher]);
 });
